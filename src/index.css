@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #FF0B0B;
+  --color-surface: #121212;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-[#030303] text-white antialiased selection:bg-primary selection:text-white;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@layer components {
+  /* Premium Glass Panel with Gradient Border Shell */
+  .glass-panel {
+    @apply relative bg-white/[0.03] backdrop-blur-xl rounded-sm transition-all duration-500;
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+  }
+  
+  .glass-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      180deg, 
+      rgba(255, 255, 255, 0.1) 0%, 
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .red-glow {
+    box-shadow: 0 0 30px rgba(255, 11, 11, 0.15);
+  }
+
+  .tech-card {
+    @apply relative overflow-hidden;
+  }
+
+  .tech-card::after {
+    content: "";
+    @apply absolute inset-0 opacity-[0.02] pointer-events-none;
+    background-image: 
+      radial-gradient(circle at 2px 2px, white 1px, transparent 0);
+    background-size: 24px 24px;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 11, 11, 0.3);
+}

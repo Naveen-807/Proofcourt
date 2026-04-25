@@ -1,0 +1,6 @@
+{
+  "name": "ProofCourt",
+  "description": "A permit-and-proof settlement layer for autonomous agents. No action without a permit, no payout without proof.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
