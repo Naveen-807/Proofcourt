@@ -1,15 +1,16 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Agent, AppState } from '../types';
+import { Agent, AppState, ProofCourtRun } from '../types';
 import { Shield, Check, X, AlertTriangle, Fingerprint, TrendingUp, Cpu } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface Props {
   agents: Agent[];
   state: AppState;
+  run: ProofCourtRun | null;
 }
 
-export default function AgentRegistry({ agents, state }: Props) {
+export default function AgentRegistry({ agents, state, run }: Props) {
   const isAgentSelectedState = ['agents_selected', 'prepare_running', 'permit_issued', 'payout_locked', 'commit_running', 'execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
 
   const selectedAgents = agents.filter(a => a.score >= 80 || a.status === 'System');
@@ -37,6 +38,7 @@ export default function AgentRegistry({ agents, state }: Props) {
         {agents.map((agent) => {
           const isSelected = agent.score >= 80 || agent.status === 'System';
           const isProcessing = isAgentSelectedState && isSelected;
+          const receipt = run?.verificationReceipt?.executorAgentId === agent.id ? run.verificationReceipt : null;
           
           return (
             <motion.div
@@ -84,6 +86,37 @@ export default function AgentRegistry({ agents, state }: Props) {
                 <div>BLOCKS: <span className="text-white/60">{agent.blocks}</span></div>
               </div>
 
+              {agent.inft && (
+                <div className="mt-3 rounded-sm border border-white/10 bg-black/25 p-2 text-[9px] font-mono text-white/45">
+                  <div className="flex items-center gap-1 text-primary/80">
+                    <Fingerprint className="h-3 w-3" />
+                    <span>iNFT #{agent.inft.tokenId}</span>
+                  </div>
+                  <div className="mt-1 break-all">pointer: {agent.inft.intelligencePointer}</div>
+                  <div className="mt-1 flex justify-between">
+                    <span>royalty</span>
+                    <span>{agent.inft.royaltyBps / 100}%</span>
+                  </div>
+                </div>
+              )}
+
+              {receipt && (
+                <div className={cn(
+                  "mt-3 rounded-sm border p-2 text-[9px] font-mono",
+                  receipt.proofPassed
+                    ? "border-green-500/30 bg-green-500/10 text-green-300"
+                    : "border-red-500/30 bg-red-500/10 text-red-300",
+                )}>
+                  <div className="flex items-center justify-between">
+                    <span>RECEIPT SCORE DELTA</span>
+                    <span>{receipt.scoreDelta > 0 ? '+' : ''}{receipt.scoreDelta}</span>
+                  </div>
+                  <div className="mt-1 text-white/45">
+                    {receipt.trustScoreBefore} → {receipt.trustScoreAfter} from {receipt.source.replaceAll('_', ' ')}
+                  </div>
+                </div>
+              )}
+
               {isAgentSelectedState && (
                 <div className="mt-2">
                   {isSelected ? (
@@ -116,8 +149,8 @@ export default function AgentRegistry({ agents, state }: Props) {
                 <span className="text-[10px] font-bold uppercase tracking-widest text-primary">Consensus Formed</span>
               </div>
               <p className="text-[11px] text-white/60 leading-relaxed">
-                3 trusted agents have committed to this mandate. Identity verified 
-                via decentralized attestations.
+                Permit quorum formed across owner, specialist, executor, and judge roles.
+                Identity and memory are linked through agent iNFT pointers.
               </p>
             </div>
           </motion.div>

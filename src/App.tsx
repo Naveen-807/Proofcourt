@@ -1,8 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Shield, Zap, AlertTriangle, RefreshCw, Lock, Unlock, CheckCircle2, Search, ArrowRight } from 'lucide-react';
+import { motion } from 'motion/react';
+import { useAccount } from 'wagmi';
 import { cn } from './lib/utils';
-import { AppState, INITIAL_AGENTS, WORKFLOW_NODES, Agent } from './types';
+import { AppState, INITIAL_AGENTS, Agent, ProofCourtRun, WorkflowResponse } from './types';
+import {
+  advanceRun,
+  createRun,
+  generateWorkflow,
+  getIntegrationStatus,
+  replayRun,
+  type IntegrationStatus,
+  restoreRun,
+  tamperRun,
+} from './api/proofcourtClient';
 
 // Components
 import Header from './components/Header';
@@ -16,98 +26,117 @@ import TamperTestPanel from './components/TamperTestPanel';
 import FinalProofSummary from './components/FinalProofSummary';
 
 export default function App() {
+  const { address, isConnected } = useAccount();
   const [state, setState] = useState<AppState>('idle');
   const [agents, setAgents] = useState<Agent[]>(INITIAL_AGENTS);
   const [isTampered, setIsTampered] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [run, setRun] = useState<ProofCourtRun | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
 
-  const handleGenerate = () => {
-    setState('workflow_generated');
-    setTimeout(() => setState('agents_selected'), 1000);
+  const syncRun = (nextRun: ProofCourtRun) => {
+    setRun(nextRun);
+    setState(nextRun.state);
+    setAgents(nextRun.agents);
+    setIsTampered(nextRun.isTampered);
+    setProgress(nextRun.progress);
   };
 
-  const handleStartRun = () => {
-    setState('prepare_running');
-    setProgress(0);
+  const handleGenerate = async (intent: string) => {
+    try {
+      setApiError(null);
+      const nextWorkflow = await generateWorkflow(intent);
+      setAgents(nextWorkflow.agents);
+      setState('workflow_generated');
+
+      const nextRun = await createRun(nextWorkflow.mandate.id);
+      setTimeout(() => syncRun(nextRun), 700);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Unable to generate workflow');
+    }
   };
 
   useEffect(() => {
-    if (state === 'prepare_running') {
-      const timer = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 45) {
-            clearInterval(timer);
-            setState('permit_issued');
-            return 45;
-          }
-          return prev + 5;
-        });
-      }, 200);
-      return () => clearInterval(timer);
-    }
-    
-    if (state === 'permit_issued') {
-      setTimeout(() => setState('payout_locked'), 800);
-    }
+    getIntegrationStatus()
+      .then(setIntegrationStatus)
+      .catch(() => setIntegrationStatus(null));
+  }, []);
 
-    if (state === 'payout_locked') {
-      setTimeout(() => setState('commit_running'), 800);
-    }
+  const handleStartRun = async () => {
+    if (!run) return;
 
-    if (state === 'commit_running') {
-      const timer = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(timer);
-            setState('execution_complete');
-            return 90;
-          }
-          return prev + 5;
-        });
-      }, 300);
-      return () => clearInterval(timer);
-    }
-
-    if (state === 'execution_complete') {
-      setTimeout(() => setState('evidence_stored'), 1000);
-    }
-
-    if (state === 'evidence_stored') {
-      setTimeout(() => {
-        if (isTampered) {
-          setState('tamper_detected');
-        } else {
-          setState('proof_verified');
-        }
-      }, 1200);
-    }
-
-    if (state === 'proof_verified') {
-      setTimeout(() => setState('payout_released'), 1000);
-    }
-
-    if (state === 'payout_released') {
-      setTimeout(() => {
-        setState('reputation_updated');
-        // Update Agent score
-        setAgents(prev => prev.map(a => a.id === 'prime' ? { ...a, score: 90 } : a));
-      }, 1000);
-    }
-  }, [state, isTampered]);
-
-  const handleTamper = () => {
-    setIsTampered(true);
-    if (state === 'reputation_updated' || state === 'payout_released' || state === 'proof_verified') {
-      setState('tamper_detected');
-      setAgents(prev => prev.map(a => a.id === 'prime' ? { ...a, score: 82 } : a));
+    try {
+      setApiError(null);
+      const nextRun = await advanceRun(run.id);
+      syncRun(nextRun);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Unable to start run');
     }
   };
 
-  const handleRestore = () => {
-    setIsTampered(false);
-    if (state === 'tamper_detected' || state === 'payout_blocked') {
-      setState('proof_verified');
-      setAgents(prev => prev.map(a => a.id === 'prime' ? { ...a, score: 90 } : a));
+  useEffect(() => {
+    const autoAdvanceStates: AppState[] = [
+      'prepare_running',
+      'permit_issued',
+      'payout_locked',
+      'commit_running',
+      'execution_complete',
+      'evidence_stored',
+      'proof_verified',
+      'payout_released',
+    ];
+
+    if (!run || !autoAdvanceStates.includes(state)) {
+      return;
+    }
+
+    const delay = state === 'prepare_running' || state === 'commit_running' ? 900 : 700;
+    const timer = window.setTimeout(async () => {
+      try {
+        const nextRun = await advanceRun(run.id);
+        syncRun(nextRun);
+      } catch (error) {
+        setApiError(error instanceof Error ? error.message : 'Unable to advance run');
+      }
+    }, delay);
+
+    return () => window.clearTimeout(timer);
+  }, [state, run?.id]);
+
+  const handleTamper = async () => {
+    if (!run) return;
+
+    try {
+      setApiError(null);
+      const nextRun = await tamperRun(run.id);
+      syncRun(nextRun);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Unable to run tamper test');
+    }
+  };
+
+  const handleRestore = async () => {
+    if (!run) return;
+
+    try {
+      setApiError(null);
+      const nextRun = await restoreRun(run.id);
+      syncRun(nextRun);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Unable to restore evidence');
+    }
+  };
+
+  const handleReplay = async () => {
+    if (!run) return;
+
+    try {
+      setApiError(null);
+      const nextRun = await replayRun(run.id);
+      syncRun(nextRun);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Unable to replay from 0G');
     }
   };
 
@@ -124,6 +153,12 @@ export default function App() {
           <IntentInput onGenerate={handleGenerate} isReady={state === 'idle'} />
         </section>
 
+        {apiError && (
+          <div className="glass-panel border border-red-500/30 bg-red-500/10 p-4 text-xs text-red-200 font-mono">
+            API error: {apiError}. Run <span className="text-white">npm run api</span> in another terminal.
+          </div>
+        )}
+
         {state !== 'idle' && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
@@ -133,21 +168,33 @@ export default function App() {
             {/* Left Column: Flow & Timeline */}
             <div className="lg:col-span-8 flex flex-col gap-10">
               <WorkflowCanvas state={state} />
-              <CommitTimeline state={state} progress={progress} onStart={handleStartRun} />
-              <SponsorProofPanels state={state} isTampered={isTampered} />
+              <CommitTimeline
+                state={state}
+                progress={progress}
+                onStart={handleStartRun}
+                walletConnected={isConnected}
+              />
+              <SponsorProofPanels
+                state={state}
+                isTampered={isTampered}
+                run={run}
+                integrationStatus={integrationStatus}
+              />
             </div>
 
             {/* Right Column: Registry & Status */}
             <div className="lg:col-span-4 flex flex-col gap-10">
-              <AgentRegistry agents={agents} state={state} />
-              <PayoutStatusCard state={state} isTampered={isTampered} />
+              <AgentRegistry agents={agents} state={state} run={run} />
+              <PayoutStatusCard state={state} isTampered={isTampered} payerAddress={address} run={run} />
               <TamperTestPanel 
                 state={state} 
                 onTamper={handleTamper} 
                 onRestore={handleRestore} 
+                onReplay={handleReplay}
                 isTampered={isTampered} 
+                replayedFromZeroG={Boolean(run?.replayedFromZeroG)}
               />
-              <FinalProofSummary state={state} />
+              <FinalProofSummary state={state} run={run} />
             </div>
           </motion.div>
         )}

@@ -1,21 +1,51 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Search, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Search, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface Props {
-  onGenerate: () => void;
+  onGenerate: (intent: string) => Promise<void> | void;
   isReady: boolean;
 }
 
 export default function IntentInput({ onGenerate, isReady }: Props) {
   const [value, setValue] = useState("Send 1 ETH every month into my vault");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const samples = [
     "Send 1 ETH monthly to vault",
     "Send 2.5 ETH weekly",
     "Run protected buy if ETH rises 1%"
   ];
+
+  const handleGenerate = async () => {
+    if (!isReady || isSubmitting) return;
+
+    setIsSubmitting(true);
+    try {
+      await onGenerate(value);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const buttonContent = (() => {
+    if (isSubmitting) return 'Processing...';
+    if (!isReady) {
+      return (
+        <>
+          Workflow Generated
+          <CheckCircle2 className="w-4 h-4" />
+        </>
+      );
+    }
+    return (
+      <>
+        Generate Workflow
+        <ArrowRight className="w-4 h-4" />
+      </>
+    );
+  })();
 
   return (
     <div className="flex flex-col items-center text-center max-w-4xl mx-auto">
@@ -45,25 +75,18 @@ export default function IntentInput({ onGenerate, isReady }: Props) {
               onChange={(e) => setValue(e.target.value)}
               placeholder="Enter your intent..."
               className="bg-transparent border-none outline-none w-full text-lg font-light text-white placeholder:text-white/20"
-              disabled={!isReady}
+              disabled={!isReady || isSubmitting}
             />
           </div>
           <button
-            onClick={onGenerate}
-            disabled={!isReady}
+            onClick={handleGenerate}
+            disabled={!isReady || isSubmitting}
             className={cn(
               "px-8 py-3 bg-white text-black font-medium flex items-center justify-center gap-2 rounded-sm transition-all hover:bg-neutral-200 active:scale-95 disabled:opacity-50 disabled:pointer-events-none",
-              !isReady && "bg-white/10 text-white/50"
+              (!isReady || isSubmitting) && "bg-white/10 text-white/50"
             )}
           >
-            {isReady ? (
-              <>
-                Generate Workflow
-                <ArrowRight className="w-4 h-4" />
-              </>
-            ) : (
-              "Processing..."
-            )}
+            {buttonContent}
           </button>
         </div>
       </div>
@@ -73,7 +96,7 @@ export default function IntentInput({ onGenerate, isReady }: Props) {
           <button
             key={sample}
             onClick={() => setValue(sample)}
-            disabled={!isReady}
+            disabled={!isReady || isSubmitting}
             className="px-3 py-1.5 rounded-sm border border-white/5 bg-white/5 text-xs text-white/60 hover:text-white hover:border-white/20 transition-all"
           >
             {sample}
@@ -88,7 +111,7 @@ export default function IntentInput({ onGenerate, isReady }: Props) {
         </div>
         <div className="h-4 w-px bg-white/20" />
         <div className="flex items-center gap-2">
-          <span className="font-bold tracking-tighter italic">AXELAR</span>
+          <span className="font-bold tracking-tighter italic">GENSYN AXL</span>
         </div>
         <div className="h-4 w-px bg-white/20" />
         <div className="flex items-center gap-2">
