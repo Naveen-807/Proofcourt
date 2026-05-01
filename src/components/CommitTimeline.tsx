@@ -29,7 +29,7 @@ const PHASE2_STEPS = [
   { id: 'receipt', label: 'KeeperHub receipt collected', state: 'execution_complete' },
   { id: 'axl_final', label: 'AXL transcript finalized', state: 'evidence_stored' },
   { id: 'zeroG_upload', label: 'Evidence uploaded to 0G', state: 'evidence_stored' },
-  { id: 'verify', label: 'Proof Judge verifies bundle', state: 'proof_verified' },
+  { id: 'verify', label: '3-Verifier Jury quorum vote', state: 'proof_verified' },
   { id: 'release', label: 'Payout released', state: 'payout_released' },
   { id: 'reputation', label: 'Reputation updated', state: 'reputation_updated' },
 ];

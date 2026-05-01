@@ -9,12 +9,16 @@ const artifactsDir = path.join(rootDir, 'artifacts', 'contracts');
 const {
   RPC_URL,
   PRIVATE_KEY,
-  JUDGE_ADDRESS,
-  EXECUTOR_PRIVATE_KEY,
-  EXECUTOR_ADDRESS,
-  OWNER_AGENT_ADDRESS,
-  SPECIALIST_AGENT_ADDRESS,
   AGENT_METADATA_BASE_URI,
+  REQUESTER_ADDRESS,
+  WORKER_ADDRESS,
+  VERIFIER_1_ADDRESS,
+  VERIFIER_2_ADDRESS,
+  VERIFIER_3_ADDRESS,
+  // legacy compat
+  JUDGE_ADDRESS,
+  EXECUTOR_ADDRESS,
+  EXECUTOR_PRIVATE_KEY,
 } = process.env;
 
 if (!RPC_URL || !PRIVATE_KEY) {
@@ -44,16 +48,26 @@ async function deploy(contractName, signer, args = []) {
 
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
-const executor = EXECUTOR_ADDRESS ||
+const workerAddress = WORKER_ADDRESS || EXECUTOR_ADDRESS ||
   (EXECUTOR_PRIVATE_KEY ? new ethers.Wallet(EXECUTOR_PRIVATE_KEY, provider).address : signer.address);
-const judge = JUDGE_ADDRESS || signer.address;
-const ownerAgent = OWNER_AGENT_ADDRESS || signer.address;
-const specialistAgent = SPECIALIST_AGENT_ADDRESS || executor;
+const requesterAddress = REQUESTER_ADDRESS || signer.address;
+const verifier1Address = VERIFIER_1_ADDRESS || JUDGE_ADDRESS || signer.address;
+const verifier2Address = VERIFIER_2_ADDRESS || signer.address;
+const verifier3Address = VERIFIER_3_ADDRESS || signer.address;
 const metadataBaseUri = AGENT_METADATA_BASE_URI || '0g://proofcourt/agents';
 
+// 5 court roles: requester, worker, verifier-1, verifier-2, verifier-3
+const courtAgents = [
+  { address: requesterAddress, role: 1, score: 96, slug: 'requester', playbook: '0g-agent-playbook-requester', bps: 250 },
+  { address: workerAddress,    role: 2, score: 89, slug: 'worker',    playbook: '0g-agent-playbook-worker',    bps: 300 },
+  { address: verifier1Address, role: 3, score: 100, slug: 'verifier-1', playbook: '0g-agent-playbook-verifier', bps: 200 },
+  { address: verifier2Address, role: 3, score: 100, slug: 'verifier-2', playbook: '0g-agent-playbook-verifier', bps: 200 },
+  { address: verifier3Address, role: 3, score: 100, slug: 'verifier-3', playbook: '0g-agent-playbook-verifier', bps: 200 },
+];
+
 console.log(`Deploying ProofCourt contracts from ${signer.address}`);
-console.log(`Initial judge: ${judge}`);
-console.log(`Executor agent: ${executor}`);
+console.log(`Court roles: requester=${requesterAddress} worker=${workerAddress}`);
+console.log(`Verifiers: [${verifier1Address}, ${verifier2Address}, ${verifier3Address}]`);
 
 const escrow = await deploy('ProofCourtEscrow', signer, [signer.address]);
 const workRegistry = await deploy('WorkRegistry', signer, [signer.address]);
@@ -61,7 +75,7 @@ const evidenceRegistry = await deploy('EvidenceRegistry', signer, [signer.addres
 const reputation = await deploy('AgentReputation', signer, [signer.address]);
 const agentInft = await deploy('AgentINFT', signer, [signer.address]);
 const coordinator = await deploy('ProofCourtCoordinator', signer, [
-  judge,
+  verifier1Address,  // lead verifier acts as judge for backward compat
   await escrow.getAddress(),
   await workRegistry.getAddress(),
   await evidenceRegistry.getAddress(),
@@ -69,13 +83,20 @@ const coordinator = await deploy('ProofCourtCoordinator', signer, [
 ]);
 
 const coordinatorAddress = await coordinator.getAddress();
-await registerAgentIfNeeded(reputation, ownerAgent, 1, 96);
-await registerAgentIfNeeded(reputation, specialistAgent, 2, 89);
-await registerAgentIfNeeded(reputation, judge, 3, 100);
-await (await agentInft.mint(ownerAgent, `${metadataBaseUri}/owner.json`, '0g-agent-playbook-owner', 250)).wait();
-await (await agentInft.mint(specialistAgent, `${metadataBaseUri}/specialist.json`, '0g-agent-playbook-specialist', 300)).wait();
-await (await agentInft.mint(judge, `${metadataBaseUri}/judge.json`, '0g-agent-playbook-judge', 200)).wait();
-await (await evidenceRegistry.setVerdictRecorder(specialistAgent)).wait();
+
+// Register and mint iNFTs for all 5 court roles
+for (const agent of courtAgents) {
+  await registerAgentIfNeeded(reputation, agent.address, agent.role, agent.score);
+  await (await agentInft.mint(
+    agent.address,
+    `${metadataBaseUri}/${agent.slug}.json`,
+    agent.playbook,
+    agent.bps,
+  )).wait();
+  console.log(`iNFT minted for ${agent.slug} (${agent.address})`);
+}
+
+await (await evidenceRegistry.setVerdictRecorder(verifier1Address)).wait();
 await (await escrow.setJudge(coordinatorAddress)).wait();
 await (await workRegistry.setJudge(coordinatorAddress)).wait();
 await (await evidenceRegistry.setJudge(coordinatorAddress)).wait();
@@ -84,8 +105,13 @@ await (await reputation.setJudge(coordinatorAddress)).wait();
 const deployments = {
   chainId: Number((await provider.getNetwork()).chainId),
   deployer: signer.address,
-  judge,
-  executor,
+  courtRoles: {
+    requester: requesterAddress,
+    worker: workerAddress,
+    verifier1: verifier1Address,
+    verifier2: verifier2Address,
+    verifier3: verifier3Address,
+  },
   contracts: {
     ProofCourtEscrow: await escrow.getAddress(),
     WorkRegistry: await workRegistry.getAddress(),

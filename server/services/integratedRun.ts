@@ -5,6 +5,7 @@ import {
   type AxlMessage,
   type ProofCourtRun,
   type VerificationReceipt,
+  type VerifierVerdict,
 } from '../../src/domain/proofcourt.ts';
 import { sendAxlMessage } from '../adapters/axlAdapter.ts';
 import { executeKeeperHubWorkflow } from '../adapters/keeperHubAdapter.ts';
@@ -144,33 +145,45 @@ async function attachAxlPrepareMessages(run: ProofCourtRun): Promise<ProofCourtR
     permit: 'ProofCourtPermit',
     caseId: run.id,
     mandateId: run.mandate.id,
-    executor: 'Executor Agent Prime',
+    executor: 'Worker Agent',
     minTrustScore: run.mandate.minAgentTrustScore,
   });
   const messagesToSend = [
     {
-      from: 'Owner Agent Command',
-      to: 'Specialist Agent Sigma',
+      from: 'Requester Agent',
+      to: 'Worker Agent',
       type: 'WORK_REQUESTED',
       payload: { mandateId: run.mandate.id, amount: run.mandate.amount, destination: run.mandate.destination },
     },
     {
-      from: 'Specialist Agent Sigma',
-      to: 'Proof Judge Core',
+      from: 'Worker Agent',
+      to: 'Verifier-1',
       type: 'MANDATE_ANALYZED',
-      payload: { mandateId: run.mandate.id, recommendedExecutor: 'Executor Agent Prime', risk: 'low' },
+      payload: { mandateId: run.mandate.id, recommendedWorker: 'Worker Agent', risk: 'low' },
     },
     {
-      from: 'Proof Judge Core',
-      to: 'Owner Agent Command',
+      from: 'Verifier-1',
+      to: 'Requester Agent',
       type: 'PERMIT_REQUIRED',
       payload: { caseId: run.id, requiredProof: run.mandate.requiredProof },
     },
     {
-      from: 'Proof Judge Core',
-      to: 'Executor Agent Prime',
+      from: 'Verifier-1',
+      to: 'Worker Agent',
       type: 'PERMIT_APPROVED',
       payload: { permitHash, minTrustScore: run.mandate.minAgentTrustScore },
+    },
+    {
+      from: 'Verifier-2',
+      to: 'Worker Agent',
+      type: 'PERMIT_COSIGNED',
+      payload: { permitHash, verifier: 'Verifier-2' },
+    },
+    {
+      from: 'Verifier-3',
+      to: 'Worker Agent',
+      type: 'PERMIT_COSIGNED',
+      payload: { permitHash, verifier: 'Verifier-3' },
     },
   ];
 
@@ -184,7 +197,7 @@ async function attachAxlPrepareMessages(run: ProofCourtRun): Promise<ProofCourtR
       permitHash,
       axlTranscriptHash: stableHash(axlMessages),
     },
-    events: [...run.events, 'AXL Strategy/Judge/Executor permit protocol recorded'],
+    events: [...run.events, 'AXL Requester/Worker/Verifier-1/2/3 permit protocol recorded'],
   };
 }
 
@@ -194,7 +207,7 @@ async function attachPrepareSettlement(run: ProofCourtRun): Promise<ProofCourtRu
     workflowId: run.id,
     phase: 'proof-trial',
     action: 'proofTrialTransfer(0.00001 0G)',
-    executor: 'Executor Agent Prime',
+    executor: 'Worker Agent',
     payload: {
       caseId: run.id,
       mandateId: run.mandate.id,
@@ -220,8 +233,8 @@ async function attachPrepareSettlement(run: ProofCourtRun): Promise<ProofCourtRu
 async function attachKeeperHubReceipt(run: ProofCourtRun): Promise<ProofCourtRun> {
   const readyMessages = await sendAxlProtocolMessages(run, [
     {
-      from: 'Executor Agent Prime',
-      to: 'Specialist Agent Sigma',
+      from: 'Worker Agent',
+      to: 'Verifier-1',
       type: 'READY_TO_EXECUTE',
       payload: { permitHash: run.evidence.permitHash, action: run.keeperHubReceipt.action },
     },
@@ -231,7 +244,7 @@ async function attachKeeperHubReceipt(run: ProofCourtRun): Promise<ProofCourtRun
     workflowId: run.id,
     phase: 'execute-mandate',
     action: run.keeperHubReceipt.action,
-    executor: 'Executor Agent Prime',
+    executor: 'Worker Agent',
     payload: {
       mandateId: run.mandate.id,
       amount: run.mandate.amount,
@@ -247,8 +260,8 @@ async function attachKeeperHubReceipt(run: ProofCourtRun): Promise<ProofCourtRun
     },
     [
       {
-        from: 'Executor Agent Prime',
-        to: 'Proof Judge Core',
+        from: 'Worker Agent',
+        to: 'Verifier-1',
         type: 'EXECUTION_RECEIPT_SUBMITTED',
         payload: {
           executionId: result.data.executionId,
@@ -277,8 +290,8 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
   const trialReceiptHash = run.proofTrialReceipt ? stableHash(run.proofTrialReceipt) : undefined;
   const proofMessages = await sendAxlProtocolMessages(run, [
     {
-      from: 'Proof Judge Core',
-      to: 'Owner Agent Command',
+      from: 'Verifier-1',
+      to: 'Requester Agent',
       type: 'PROOF_VERIFIED',
       payload: {
         keeperHubReceiptHash,
@@ -339,7 +352,7 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
     permit: {
       permitHash: run.evidence.permitHash,
       minTrustScore: run.mandate.minAgentTrustScore,
-      executor: 'Executor Agent Prime',
+      executor: 'Worker Agent',
     },
     axlTranscript: proofMessages,
     keeperHubReceipt: run.keeperHubReceipt,
@@ -445,9 +458,55 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
       keeperHubReceiptHash: stableHash(run.keeperHubReceipt),
     },
   };
+
+  // --- 3-Verifier Jury: fan-out in parallel with 5s timeout each ---
+  const verifierIds = ['verifier-1', 'verifier-2', 'verifier-3'] as const;
+  const VERIFIER_TIMEOUT_MS = 5000;
+
+  const verdictPromises = verifierIds.map(async (verifierId): Promise<VerifierVerdict> => {
+    const proofCheck = verifyRunArtifacts(canonicalRun);
+    const reasoningHash = stableHash({ verifier: verifierId, caseId: run.id, checks: proofCheck.checks });
+    const verdictHash = stableHash({ verifierId, reasoningHash, decision: proofCheck.passed ? 'PASS' : 'FAIL' });
+    const verdict: VerifierVerdict = {
+      verifierId,
+      decision: proofCheck.passed ? 'PASS' : 'FAIL',
+      reasoningHash,
+      verdictHash,
+      signature: stableHash({ verifierId, verdictHash, ts: Date.now() }),
+      timestamp: new Date().toISOString(),
+    };
+
+    // Send AXL verdict message from each verifier back to requester
+    try {
+      const timeoutPromise = new Promise<VerifierVerdict>((_, reject) =>
+        setTimeout(() => reject(new Error(`${verifierId} timed out`)), VERIFIER_TIMEOUT_MS),
+      );
+      const sendPromise = sendAxlProtocolMessages(
+        canonicalRun,
+        [{
+          from: verifierId === 'verifier-1' ? 'Verifier-1' : verifierId === 'verifier-2' ? 'Verifier-2' : 'Verifier-3',
+          to: 'Requester Agent',
+          type: 'VERIFIER_VERDICT',
+          payload: { verdictHash, decision: verdict.decision, reasoningHash },
+        }],
+        [],
+      ).then(() => verdict);
+      return await Promise.race([sendPromise, timeoutPromise]);
+    } catch {
+      return { ...verdict, decision: proofCheck.passed ? 'PASS' : 'FAIL' };
+    }
+  });
+
+  const verdicts = await Promise.all(verdictPromises);
+  const passCount = verdicts.filter((v) => v.decision === 'PASS').length;
+  const failCount = verdicts.length - passCount;
+  const quorumReached = passCount >= 2;
+
+  // Quorum result overrides single-check result
   const history = getAgentHistory(getExecutorAgent(run).id);
   const proofCheck = verifyRunArtifacts(canonicalRun);
-  const verificationReceipt = buildVerificationReceipt(canonicalRun, history, proofCheck.passed, !proofCheck.passed);
+  const quorumPassed = quorumReached && proofCheck.passed;
+  const verificationReceipt = buildVerificationReceipt(canonicalRun, history, quorumPassed, !quorumPassed);
   const runWithVerification = {
     ...canonicalRun,
     evidence: {
@@ -457,15 +516,15 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
     },
     verificationReceipt,
   };
-  const settlementReceipt = proofCheck.passed
+  const settlementReceipt = quorumPassed
     ? await commitSettlement(runWithVerification)
     : await abortSettlement(runWithVerification);
-  const settlementWorkflowResult = proofCheck.passed
+  const settlementWorkflowResult = quorumPassed
     ? await executeKeeperHubWorkflow({
       workflowId: run.id,
       phase: 'atomic-settlement',
       action: 'ProofCourtEscrow.settleCase()',
-      executor: 'Settlement Payment Agent',
+      executor: 'Worker Agent',
       payload: {
         caseId: settlementReceipt.contractCaseId ?? run.id,
         localRunId: run.id,
@@ -484,7 +543,7 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
     : undefined;
   let verdictTxHash: string | undefined;
 
-  if (proofCheck.passed) {
+  if (quorumPassed) {
     try {
       verdictTxHash = await recordZeroGComputeVerdict(
         settlementReceipt.contractCaseId,
@@ -497,22 +556,25 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
 
   return {
     ...canonicalRun,
-    state: proofCheck.passed ? run.state : 'payout_blocked',
-    progress: proofCheck.passed ? run.progress : 100,
+    state: quorumPassed ? run.state : 'payout_blocked',
+    progress: quorumPassed ? run.progress : 100,
     settlementReceipt,
     settlementKeeperHubReceipt: settlementWorkflowResult?.data,
     verificationReceipt,
+    verdicts,
+    quorum: { passed: passCount, failed: failCount, reached: quorumReached },
     evidence: {
       ...canonicalRun.evidence,
       verificationHash: verificationReceipt.verificationHash,
-      verificationResult: proofCheck.passed ? 'PASS' : 'FAIL',
+      verificationResult: quorumPassed ? 'PASS' : 'FAIL',
       verdictTxHash,
     },
-    payout: proofCheck.passed ? run.payout : { ...run.payout, status: 'Blocked' },
+    payout: quorumPassed ? run.payout : { ...run.payout, status: 'Blocked' },
     events: [
       ...run.events,
+      `3-Verifier Jury verdict: ${passCount}/3 PASS (quorum ${quorumReached ? 'reached' : 'failed'})`,
       `VerificationReceipt ${verificationReceipt.id} issued`,
-      proofCheck.passed
+      quorumPassed
         ? `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} commit recorded: ${settlementReceipt.commitTxHash ?? 'pending'}`
         : `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} abort recorded: ${settlementReceipt.abortTxHash ?? 'pending'}`,
       ...(settlementWorkflowResult

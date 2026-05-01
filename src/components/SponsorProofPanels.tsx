@@ -1,8 +1,8 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { AppState, ProofCourtRun } from '../types';
+import type { AppState, ProofCourtRun, VerifierVerdict } from '../types';
 import { cn } from '../lib/utils';
-import { Code, Terminal, Database, ShieldAlert, CheckCircle } from 'lucide-react';
+import { Code, Terminal, Database, ShieldAlert, CheckCircle, Scale, Vote } from 'lucide-react';
 import type { IntegrationHealth, IntegrationStatus } from '../api/proofcourtClient';
 
 interface Props {
@@ -17,6 +17,8 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
   const isKeeperActive = ['execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
   const isZeroGActive = ['evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
   const visibleMessages = run?.axlMessages ?? [];
+  const verdicts = run?.verdicts ?? [];
+  const quorum = run?.quorum;
   const keeperReceipt = run?.keeperHubReceipt;
   const keeperPhases = [
     run?.proofTrialReceipt,
@@ -25,7 +27,11 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
   ].filter(Boolean);
   const evidence = run?.evidence;
 
+  const isJuryActive = quorum !== undefined || verdicts.length > 0 || ['proof_verified', 'payout_released', 'reputation_updated', 'payout_blocked', 'tamper_detected'].includes(state);
+  const juryVerifiers: Array<'verifier-1' | 'verifier-2' | 'verifier-3'> = ['verifier-1', 'verifier-2', 'verifier-3'];
+
   return (
+    <div className="space-y-6">
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       {/* AXL Message Log */}
       <div className="glass-panel p-4 flex flex-col h-[300px]">
@@ -267,6 +273,94 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
           )}
         </div>
       </div>
+    </div>
+
+    {/* 3-Verifier Jury Grid — Phase 4 */}
+    <div className="glass-panel p-4">
+      <div className="flex items-center gap-2 mb-4 border-b border-white/5 pb-3">
+        <Scale className="w-4 h-4 text-primary" />
+        <h4 className="text-xs font-bold uppercase tracking-widest">3-Verifier Jury</h4>
+        {quorum && (
+          <span className={cn(
+            'ml-auto rounded-sm border px-2 py-1 text-[8px] font-bold uppercase tracking-widest',
+            quorum.reached
+              ? 'border-green-500/30 bg-green-500/10 text-green-400'
+              : 'border-red-500/30 bg-red-500/10 text-red-300',
+          )}>
+            Quorum {quorum.reached ? 'Reached' : 'Failed'} — {quorum.passed}/3 PASS
+          </span>
+        )}
+        {!quorum && isJuryActive && (
+          <span className="ml-auto rounded-sm border px-2 py-1 text-[8px] font-bold uppercase tracking-widest border-yellow-500/30 bg-yellow-500/10 text-yellow-400">
+            Awaiting Verdicts
+          </span>
+        )}
+      </div>
+
+      {!isJuryActive ? (
+        <div className="text-center py-6 text-[10px] text-white/20 uppercase font-bold tracking-widest">
+          Jury convenes after execution
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {juryVerifiers.map((vid) => {
+            const verdict = verdicts.find((v) => v.verifierId === vid);
+            const isPending = !verdict;
+            const passed = verdict?.decision === 'PASS';
+
+            return (
+              <div
+                key={vid}
+                className={cn(
+                  'p-3 rounded-sm border font-mono text-[10px] space-y-2',
+                  isPending
+                    ? 'border-white/10 bg-black/20'
+                    : passed
+                    ? 'border-green-500/30 bg-green-500/5'
+                    : 'border-red-500/30 bg-red-500/5',
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Vote className="w-3 h-3 text-white/40" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-white/70">{vid}</span>
+                  </div>
+                  <span className={cn(
+                    'text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-sm',
+                    isPending
+                      ? 'bg-white/10 text-white/40'
+                      : passed
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-red-500/20 text-red-400',
+                  )}>
+                    {isPending ? '...' : verdict.decision}
+                  </span>
+                </div>
+                {verdict && (
+                  <>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-white/30">verdict:</span>
+                      <span className="break-all text-white/50 text-[9px]">{verdict.verdictHash.slice(0, 32)}…</span>
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-white/30">reasoning:</span>
+                      <span className="break-all text-white/50 text-[9px]">{verdict.reasoningHash.slice(0, 32)}…</span>
+                    </div>
+                    {verdict.attestationHash && (
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-white/30">attestation:</span>
+                        <span className="break-all text-white/50 text-[9px]">{verdict.attestationHash.slice(0, 32)}…</span>
+                      </div>
+                    )}
+                    <div className="text-white/20 text-[8px]">{new Date(verdict.timestamp).toLocaleTimeString()}</div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
     </div>
   );
 }

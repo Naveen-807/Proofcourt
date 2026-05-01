@@ -14,7 +14,7 @@ export type AppState =
   | 'tamper_detected'
   | 'payout_blocked';
 
-export type AgentRole = 'Strategy' | 'Executor' | 'Judge';
+export type AgentRole = 'Requester' | 'Worker' | 'Verifier' | 'Strategy' | 'Executor' | 'Judge';
 export type AgentStatus = 'Trusted' | 'System' | 'Caution' | 'Suspended';
 
 export interface Agent {
@@ -129,6 +129,16 @@ export interface VerificationCriterion {
   passed: boolean;
 }
 
+export interface VerifierVerdict {
+  verifierId: 'verifier-1' | 'verifier-2' | 'verifier-3';
+  decision: 'PASS' | 'FAIL';
+  reasoningHash: string;
+  attestationHash?: string;
+  verdictHash: string;
+  signature: string;
+  timestamp: string;
+}
+
 export interface VerificationReceipt {
   id: string;
   caseId: string;
@@ -181,6 +191,8 @@ export interface ProofCourtRun {
   verificationReceipt?: VerificationReceipt;
   settlementReceipt?: SettlementReceipt;
   replayedFromZeroG?: boolean;
+  verdicts?: VerifierVerdict[];
+  quorum?: { passed: number; failed: number; reached: boolean };
   events: string[];
 }
 
@@ -211,67 +223,101 @@ export const STATE_ORDER: AppState[] = [
 
 export const INITIAL_AGENTS: Agent[] = [
   {
-    id: 'alpha',
-    name: 'Strategy Agent Alpha',
-    role: 'Strategy',
+    id: 'requester',
+    name: 'Requester Agent',
+    role: 'Requester',
     score: 96,
     status: 'Trusted',
     executions: 47,
     blocks: 0,
     inft: {
       tokenId: '1',
-      holder: 'owner-agent',
-      metadataURI: '0g://proofcourt/agents/owner.json',
-      intelligencePointer: '0g-agent-playbook-owner',
+      holder: 'requester-agent',
+      metadataURI: '0g://proofcourt/agents/requester.json',
+      intelligencePointer: '0g-agent-playbook-requester',
       royaltyBps: 250,
       royaltiesEarned: '0.000 ETH',
     },
   },
   {
-    id: 'prime',
-    name: 'Executor Agent Prime',
-    role: 'Executor',
+    id: 'worker',
+    name: 'Worker Agent',
+    role: 'Worker',
     score: 89,
     status: 'Trusted',
     executions: 31,
     blocks: 1,
     inft: {
       tokenId: '2',
-      holder: 'specialist-agent',
-      metadataURI: '0g://proofcourt/agents/specialist.json',
-      intelligencePointer: '0g-agent-playbook-specialist',
+      holder: 'worker-agent',
+      metadataURI: '0g://proofcourt/agents/worker.json',
+      intelligencePointer: '0g-agent-playbook-worker',
       royaltyBps: 300,
       royaltiesEarned: '0.000 ETH',
     },
   },
   {
-    id: 'core',
-    name: 'Proof Judge Core',
-    role: 'Judge',
+    id: 'verifier-1',
+    name: 'Verifier-1',
+    role: 'Verifier',
     score: 100,
     status: 'System',
     executions: 78,
     blocks: 0,
     inft: {
       tokenId: '3',
-      holder: 'judge-agent',
-      metadataURI: '0g://proofcourt/agents/judge.json',
-      intelligencePointer: '0g-agent-playbook-judge',
+      holder: 'verifier-1-agent',
+      metadataURI: '0g://proofcourt/agents/verifier-1.json',
+      intelligencePointer: '0g-agent-playbook-verifier',
       royaltyBps: 200,
       royaltiesEarned: '0.000 ETH',
     },
   },
-  { id: 'beta', name: 'Executor Agent Beta', role: 'Executor', score: 62, status: 'Caution', executions: 8, blocks: 3 },
-  { id: 'rogue', name: 'Strategy Agent Rogue', role: 'Strategy', score: 23, status: 'Suspended', executions: 5, blocks: 4 },
+  {
+    id: 'verifier-2',
+    name: 'Verifier-2',
+    role: 'Verifier',
+    score: 100,
+    status: 'System',
+    executions: 65,
+    blocks: 0,
+    inft: {
+      tokenId: '4',
+      holder: 'verifier-2-agent',
+      metadataURI: '0g://proofcourt/agents/verifier-2.json',
+      intelligencePointer: '0g-agent-playbook-verifier',
+      royaltyBps: 200,
+      royaltiesEarned: '0.000 ETH',
+    },
+  },
+  {
+    id: 'verifier-3',
+    name: 'Verifier-3',
+    role: 'Verifier',
+    score: 100,
+    status: 'System',
+    executions: 52,
+    blocks: 0,
+    inft: {
+      tokenId: '5',
+      holder: 'verifier-3-agent',
+      metadataURI: '0g://proofcourt/agents/verifier-3.json',
+      intelligencePointer: '0g-agent-playbook-verifier',
+      royaltyBps: 200,
+      royaltiesEarned: '0.000 ETH',
+    },
+  },
+  { id: 'worker-beta', name: 'Worker Agent Beta', role: 'Worker', score: 62, status: 'Caution', executions: 8, blocks: 3 },
+  { id: 'rogue', name: 'Rogue Worker', role: 'Worker', score: 23, status: 'Suspended', executions: 5, blocks: 4 },
 ];
 
 export const WORKFLOW_NODE_SPECS: WorkflowNodeSpec[] = [
   { id: 'intent', label: 'User Intent', desc: 'Natural language mandate' },
   { id: 'trigger', label: 'Schedule Trigger', desc: 'Time-based activation' },
-  { id: 'strategy', label: 'Strategy Agent', desc: 'Mandate monitor', sponsor: 'AXL' },
-  { id: 'executor', label: 'Executor Agent', desc: 'Trusted worker' },
+  { id: 'requester', label: 'Requester Agent', desc: 'Case filing and permit', sponsor: 'AXL' },
+  { id: 'worker', label: 'Worker Agent', desc: 'Trusted task executor' },
   { id: 'keeper', label: 'KeeperHub Execution', desc: 'Approved execution rail', sponsor: 'KeeperHub' },
-  { id: 'judge', label: 'Proof Judge Agent', desc: 'Permit and proof gate' },
+  { id: 'jury', label: '3-Verifier Jury', desc: 'AXL quorum verdict', sponsor: 'AXL' },
   { id: 'evidence', label: '0G Evidence', desc: 'Case File proof memory', sponsor: '0G' },
   { id: 'payout', label: 'Verified Payout', desc: 'Proof-gated settlement' },
 ];
