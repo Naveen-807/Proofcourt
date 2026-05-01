@@ -1,3 +1,5 @@
-# ProofCourt CLI
+# @proofcourt/cli
 
-Placeholder package for the command-line wrapper planned after the SDK and MCP server stabilize.
+Placeholder for a future ProofCourt CLI (`proofcourt init`, `proofcourt run`, etc.).
+
+For now, use [`@proofcourt/sdk`](../sdk/) or the [MCP server](../mcp-server/) from any agent host.

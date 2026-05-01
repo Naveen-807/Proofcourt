@@ -459,60 +459,120 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
     },
   };
 
-  // --- 3-Verifier Jury: fan-out in parallel with 5s timeout each ---
+  // --- 3-Verifier Jury: each runs 0G Compute (distinct attestation) + AXL verdict; 5s compute timeout ---
   const verifierIds = ['verifier-1', 'verifier-2', 'verifier-3'] as const;
   const VERIFIER_TIMEOUT_MS = 5000;
+  const mandateHash = stableHash(run.mandate);
 
   const verdictPromises = verifierIds.map(async (verifierId): Promise<VerifierVerdict> => {
     const proofCheck = verifyRunArtifacts(canonicalRun);
-    const reasoningHash = stableHash({ verifier: verifierId, caseId: run.id, checks: proofCheck.checks });
-    const verdictHash = stableHash({ verifierId, reasoningHash, decision: proofCheck.passed ? 'PASS' : 'FAIL' });
+    const verifierLabel =
+      verifierId === 'verifier-1' ? 'Verifier-1' : verifierId === 'verifier-2' ? 'Verifier-2' : 'Verifier-3';
+
+    let computeResult: Awaited<ReturnType<typeof runZeroGComputeVerdict>>;
+    try {
+      computeResult = await Promise.race([
+        runZeroGComputeVerdict({
+          caseId: run.id,
+          evidenceRoot: canonicalRun.evidence.root ?? '',
+          mandateHash,
+          permitHash: run.evidence.permitHash,
+          axlTranscriptHash: canonicalRun.evidence.axlTranscriptHash,
+          keeperHubReceiptHash: canonicalRun.evidence.keeperHubReceiptHash,
+          caseFileHash: stableHash({
+            caseId: run.id,
+            root: canonicalRun.evidence.root,
+            verifierId,
+            workOutputHash: run.workOutputHash,
+          }),
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`${verifierId} compute timeout`)), VERIFIER_TIMEOUT_MS),
+        ),
+      ]);
+    } catch {
+      const ts = new Date().toISOString();
+      return {
+        verifierId,
+        decision: 'OFFLINE',
+        reasoningHash: stableHash({ offline: true, verifierId, caseId: run.id }),
+        verdictHash: stableHash({ offline: verifierId, caseId: run.id, ts }),
+        signature: stableHash({ offline: verifierId, ts }),
+        timestamp: ts,
+      };
+    }
+
+    const llmSaysPass = computeResult.data.compliant;
+    const artifactsOk = proofCheck.passed;
+    const decision: VerifierVerdict['decision'] = llmSaysPass && artifactsOk ? 'PASS' : 'FAIL';
+    const reasoningHash = stableHash({
+      verifier: verifierId,
+      caseId: run.id,
+      checks: proofCheck.checks,
+      llmCompliant: llmSaysPass,
+      computeVerdictHash: computeResult.data.verdictHash,
+    });
+    const verdictHash = stableHash({ verifierId, reasoningHash, decision });
     const verdict: VerifierVerdict = {
       verifierId,
-      decision: proofCheck.passed ? 'PASS' : 'FAIL',
+      decision,
       reasoningHash,
+      attestationHash: computeResult.data.attestationHash,
       verdictHash,
       signature: stableHash({ verifierId, verdictHash, ts: Date.now() }),
       timestamp: new Date().toISOString(),
     };
 
-    // Send AXL verdict message from each verifier back to requester
     try {
-      const timeoutPromise = new Promise<VerifierVerdict>((_, reject) =>
-        setTimeout(() => reject(new Error(`${verifierId} timed out`)), VERIFIER_TIMEOUT_MS),
-      );
-      const sendPromise = sendAxlProtocolMessages(
-        canonicalRun,
-        [{
-          from: verifierId === 'verifier-1' ? 'Verifier-1' : verifierId === 'verifier-2' ? 'Verifier-2' : 'Verifier-3',
-          to: 'Requester Agent',
-          type: 'VERIFIER_VERDICT',
-          payload: { verdictHash, decision: verdict.decision, reasoningHash },
-        }],
-        [],
-      ).then(() => verdict);
-      return await Promise.race([sendPromise, timeoutPromise]);
+      await Promise.race([
+        sendAxlProtocolMessages(
+          canonicalRun,
+          [
+            {
+              from: verifierLabel,
+              to: 'Requester Agent',
+              type: 'VERIFIER_VERDICT',
+              payload: {
+                verdictHash,
+                decision: verdict.decision,
+                reasoningHash,
+                attestationHash: verdict.attestationHash,
+              },
+            },
+          ],
+          [],
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`${verifierId} axl timeout`)), VERIFIER_TIMEOUT_MS),
+        ),
+      ]);
     } catch {
-      return { ...verdict, decision: proofCheck.passed ? 'PASS' : 'FAIL' };
+      // AXL slow — verdict still stands from compute + artifact check
     }
+
+    return verdict;
   });
 
   const verdicts = await Promise.all(verdictPromises);
   const passCount = verdicts.filter((v) => v.decision === 'PASS').length;
-  const failCount = verdicts.length - passCount;
-  const quorumReached = passCount >= 2;
+  const failCount = verdicts.filter((v) => v.decision === 'FAIL').length;
+  const responded = verdicts.filter((v) => v.decision !== 'OFFLINE').length;
+  const quorumReached = responded >= 2 && (passCount >= 2 || failCount >= 2);
+  const quorumPassed = passCount >= 2;
 
-  // Quorum result overrides single-check result
   const history = getAgentHistory(getExecutorAgent(run).id);
-  const proofCheck = verifyRunArtifacts(canonicalRun);
-  const quorumPassed = quorumReached && proofCheck.passed;
-  const verificationReceipt = buildVerificationReceipt(canonicalRun, history, quorumPassed, !quorumPassed);
+  const verificationReceipt = buildVerificationReceipt(
+    canonicalRun,
+    history,
+    quorumPassed,
+    !quorumPassed || (quorumReached && !quorumPassed),
+  );
   const runWithVerification = {
     ...canonicalRun,
     evidence: {
       ...canonicalRun.evidence,
       verificationHash: verificationReceipt.verificationHash,
-      verificationResult: proofCheck.passed ? 'PASS' as const : 'FAIL' as const,
+      verificationResult: quorumPassed ? 'PASS' as const : 'FAIL' as const,
     },
     verificationReceipt,
   };
@@ -562,7 +622,11 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
     settlementKeeperHubReceipt: settlementWorkflowResult?.data,
     verificationReceipt,
     verdicts,
-    quorum: { passed: passCount, failed: failCount, reached: quorumReached },
+    quorum: {
+      passed: passCount,
+      failed: failCount,
+      reached: quorumReached,
+    },
     evidence: {
       ...canonicalRun.evidence,
       verificationHash: verificationReceipt.verificationHash,
@@ -572,7 +636,7 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
     payout: quorumPassed ? run.payout : { ...run.payout, status: 'Blocked' },
     events: [
       ...run.events,
-      `3-Verifier Jury verdict: ${passCount}/3 PASS (quorum ${quorumReached ? 'reached' : 'failed'})`,
+      `3-Verifier Jury: ${passCount} PASS / ${failCount} FAIL / ${verdicts.filter((v) => v.decision === 'OFFLINE').length} OFFLINE (quorum ${quorumReached ? 'closed' : 'incomplete'})`,
       `VerificationReceipt ${verificationReceipt.id} issued`,
       quorumPassed
         ? `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} commit recorded: ${settlementReceipt.commitTxHash ?? 'pending'}`

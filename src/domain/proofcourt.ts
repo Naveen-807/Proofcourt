@@ -131,7 +131,8 @@ export interface VerificationCriterion {
 
 export interface VerifierVerdict {
   verifierId: 'verifier-1' | 'verifier-2' | 'verifier-3';
-  decision: 'PASS' | 'FAIL';
+  /** OFFLINE = verifier timed out (resilience demo: 2/3 live still quorums if PASS majority) */
+  decision: 'PASS' | 'FAIL' | 'OFFLINE';
   reasoningHash: string;
   attestationHash?: string;
   verdictHash: string;
@@ -161,10 +162,10 @@ export interface VerificationReceipt {
 
 export interface SettlementReceipt {
   mode: 'live' | 'mock';
-  caseId: string;
+  caseId?: string;
   workflowId: string;
   executorAddress: string;
-  escrowStatus: 'Locked' | 'Released' | 'Blocked';
+  escrowStatus: 'Locked' | 'Released' | 'Blocked' | 'Refunded';
   contractCaseId?: string;
   prepareTxHash?: string;
   commitTxHash?: string;
@@ -194,6 +195,14 @@ export interface ProofCourtRun {
   verdicts?: VerifierVerdict[];
   quorum?: { passed: number; failed: number; reached: boolean };
   events: string[];
+  // SDK work submission fields (set via POST /api/runs/:id/work)
+  workOutputHash?: string;
+  workSummary?: string;
+  workerAddress?: string;
+  // Convenience fields for galleries and SDK polling
+  createdAt?: string;
+  zeroGStorageRoot?: string;
+  txHash?: string;
 }
 
 export interface WorkflowResponse {
@@ -370,6 +379,7 @@ export function createWorkflow(text: string): WorkflowResponse {
 export function createRun(workflow: WorkflowResponse): ProofCourtRun {
   return {
     id: `run_${Date.now()}`,
+    createdAt: new Date().toISOString(),
     state: 'agents_selected',
     progress: 0,
     mandate: workflow.mandate,
