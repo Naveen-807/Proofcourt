@@ -1,4 +1,4 @@
-export type IntegrationMode = 'live';
+export type IntegrationMode = 'live' | 'mock';
 
 export interface IntegrationResult<T> {
   mode: IntegrationMode;
@@ -95,7 +95,8 @@ export interface ZeroGComputeResult {
   reason: string;
   confidence: number;
   model: string;
-  source: '0g-compute' | 'compute-rest';
+  source: string;
   attestationHash?: string;
   txHash?: string;
+  signatureValid?: boolean;
 }

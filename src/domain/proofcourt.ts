@@ -67,7 +67,7 @@ export interface AxlMessage {
   type: string;
   payloadHash?: string;
   hash: string;
-  mode?: 'live';
+  mode?: 'live' | 'mock';
 }
 
 export interface KeeperHubLogEntry {
@@ -108,7 +108,7 @@ export interface EvidenceBundle {
   verdictReason?: string;
   verdictConfidence?: number;
   verdictModel?: string;
-  verdictSource?: '0g-compute' | 'compute-rest';
+  verdictSource?: string;
   verdictAttestationHash?: string;
   verdictTxHash?: string;
   verificationHash?: string;
@@ -160,7 +160,7 @@ export interface VerificationReceipt {
 }
 
 export interface SettlementReceipt {
-  mode: 'live';
+  mode: 'live' | 'mock';
   caseId: string;
   workflowId: string;
   executorAddress: string;
