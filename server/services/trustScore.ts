@@ -1,8 +1,8 @@
 import type { Agent, ProofCourtRun, VerificationCriterion, VerificationReceipt } from '../../src/domain/proofcourt.ts';
 import { stableHash } from '../adapters/hash.ts';
 
-const EXECUTOR_AGENT_ID = 'prime';
-const EXECUTOR_AGENT_NAME = 'Executor Agent Prime';
+const EXECUTOR_AGENT_ID = 'worker';
+const EXECUTOR_AGENT_NAME = 'Worker Agent';
 
 export function getExecutorAgent(run: ProofCourtRun): Agent {
   return run.agents.find((agent) => agent.id === EXECUTOR_AGENT_ID) ?? run.agents[0];

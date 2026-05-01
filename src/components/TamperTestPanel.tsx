@@ -76,7 +76,7 @@ export default function TamperTestPanel({ state, onTamper, onRestore, onReplay, 
               <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Tamper Detected</span>
             </div>
             <p className="text-[10px] text-white/80 leading-tight">
-              Evidence root mismatch detected. Proof Judge has locked the 
+              Evidence root mismatch detected. Verifier Jury has locked the 
               settlement layer. Payout blocked. Reputation penalty applied.
             </p>
           </div>

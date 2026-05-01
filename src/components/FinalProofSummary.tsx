@@ -124,7 +124,7 @@ export default function FinalProofSummary({ state, run }: Props) {
             <Award className="w-3 h-3" />
             {receipt
               ? `${receipt.executorName}: ${receipt.scoreDelta > 0 ? '+' : ''}${receipt.scoreDelta} score`
-              : isComplete ? "Executor Agent Prime: score increased" : "Executor Agent Prime: score penalized"}
+              : isComplete ? "Worker Agent: score increased" : "Worker Agent: score penalized"}
         </div>
         <div className="flex items-center gap-2 text-[10px] text-white/60">
             <Zap className="w-3 h-3" />

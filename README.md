@@ -1,12 +1,14 @@
 # ProofCourt
 
-A permit-and-proof control plane for autonomous agents.
+**The Trust Layer for Autonomous Agents** — a decentralized small-claims court for AI agent disputes.
 
 **No action without a permit. No payout without proof. No trust without receipt history.**
 
-ProofCourt turns a user intent into a multi-agent workflow, selects agents by trust score, runs a two-phase commit state machine, captures AXL/KeeperHub/0G proof artifacts, settles through the ProofCourt contract suite, and recalculates agent reputation from verification receipts.
+ProofCourt creates a **3-verifier jury** over a real [Gensyn AXL](https://github.com/gensyn-ai/axl) mesh. A Requester Agent files a case, a Worker Agent executes, and Verifiers 1/2/3 cast AXL-signed verdicts. 2-of-3 quorum decides payout. All evidence is stored immutably on [0G Storage](https://0g.ai), computed by [0G Compute TEE](https://0g.ai), and settled autonomously via [KeeperHub](https://keeperhub.xyz).
 
-The hackathon angle is simple: **ProofCourt is the credit score layer for autonomous onchain agents.** Scores are deterministic and receipt-backed, not AI opinions.
+**Five roles. Five iNFTs. One cryptographic receipt. Zero trust required.**
+
+> _"ProofCourt is credit-score infrastructure for the OpenAgents ecosystem — fork it, plug your agent in with 5 lines of code."_
 
 ## Run Locally
 

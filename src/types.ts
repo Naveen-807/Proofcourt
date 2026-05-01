@@ -12,6 +12,7 @@ import {
   type Mandate,
   type PayoutState,
   type ProofCourtRun,
+  type VerifierVerdict,
   type WorkflowResponse,
 } from './domain/proofcourt';
 
@@ -25,6 +26,7 @@ export type {
   Mandate,
   PayoutState,
   ProofCourtRun,
+  VerifierVerdict,
   WorkflowResponse,
 };
 
@@ -33,12 +35,16 @@ export { INITIAL_AGENTS, STATE_ORDER };
 const workflowIcons = {
   intent: Search,
   trigger: History,
-  strategy: Cpu,
-  executor: Zap,
+  requester: Cpu,
+  worker: Zap,
   keeper: Database,
-  judge: Shield,
+  jury: Shield,
   evidence: Database,
   payout: CheckCircle2,
+  // legacy compat
+  strategy: Cpu,
+  executor: Zap,
+  judge: Shield,
 };
 
 export const WORKFLOW_NODES = WORKFLOW_NODE_SPECS.map((node) => ({
