@@ -1,5 +1,6 @@
 import React from 'react';
 import { Shield } from 'lucide-react';
+import WalletPanel from './WalletPanel';
 
 export default function Header() {
   return (
@@ -24,10 +25,11 @@ export default function Header() {
             <a href="#" className="hover:text-white transition-colors">Docs</a>
           </nav>
           <div className="h-4 w-px bg-white/10 hidden md:block" />
-          <div className="flex items-center gap-2 text-xs font-mono text-white/40">
+          <div className="hidden items-center gap-2 text-xs font-mono text-white/40 xl:flex">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            0G_MAINNET_CONNECTED
+            PROOF_STACK_READY
           </div>
+          <WalletPanel />
         </div>
       </div>
     </header>

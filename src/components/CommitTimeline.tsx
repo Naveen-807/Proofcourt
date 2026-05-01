@@ -2,12 +2,13 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { AppState } from '../types';
 import { cn } from '../lib/utils';
-import { Play, CheckCircle2, Circle, Loader2, ShieldCheck, Lock } from 'lucide-react';
+import { Play, CheckCircle2, Circle, Loader2, ShieldCheck, Lock, Wallet, XCircle } from 'lucide-react';
 
 interface Props {
   state: AppState;
   progress: number;
   onStart: () => void;
+  walletConnected: boolean;
 }
 
 const PHASE1_STEPS = [
@@ -33,7 +34,7 @@ const PHASE2_STEPS = [
   { id: 'reputation', label: 'Reputation updated', state: 'reputation_updated' },
 ];
 
-export default function CommitTimeline({ state, progress, onStart }: Props) {
+export default function CommitTimeline({ state, progress, onStart, walletConnected }: Props) {
   const isStarted = state !== 'workflow_generated' && state !== 'agents_selected';
   const isComplete = state === 'reputation_updated';
 
@@ -75,10 +76,16 @@ export default function CommitTimeline({ state, progress, onStart }: Props) {
         {!isStarted && (
           <button
             onClick={onStart}
-            className="px-6 py-2 bg-primary text-white text-xs font-bold rounded-sm flex items-center gap-2 hover:bg-primary/80 transition-all red-glow"
+            disabled={!walletConnected}
+            className={cn(
+              "px-6 py-2 text-white text-xs font-bold rounded-sm flex items-center gap-2 transition-all",
+              walletConnected
+                ? "bg-primary hover:bg-primary/80 red-glow"
+                : "bg-white/5 text-white/25 border border-white/10 cursor-not-allowed",
+            )}
           >
-            <Play className="w-3 h-3 fill-current" />
-            START AUTONOMOUS RUN
+            {walletConnected ? <Play className="w-3 h-3 fill-current" /> : <Wallet className="w-3 h-3" />}
+            {walletConnected ? 'START AUTONOMOUS RUN' : 'CONNECT WALLET TO FUND'}
           </button>
         )}
       </div>
@@ -172,24 +179,5 @@ export default function CommitTimeline({ state, progress, onStart }: Props) {
         </div>
       </div>
     </div>
-  );
-}
-
-function XCircle(props: any) {
-  return (
-    <svg 
-      {...props} 
-      xmlns="http://www.w3.org/2000/svg" 
-      viewBox="0 0 24 24" 
-      fill="none" 
-      stroke="currentColor" 
-      strokeWidth="2" 
-      strokeLinecap="round" 
-      strokeLinejoin="round"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <path d="m15 9-6 6" />
-      <path d="m9 9 6 6" />
-    </svg>
   );
 }

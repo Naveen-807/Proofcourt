@@ -1,18 +1,29 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { AppState } from '../types';
+import { AppState, ProofCourtRun } from '../types';
 import { cn } from '../lib/utils';
 import { Code, Terminal, Database, ShieldAlert, CheckCircle } from 'lucide-react';
+import type { IntegrationHealth, IntegrationStatus } from '../api/proofcourtClient';
 
 interface Props {
   state: AppState;
   isTampered: boolean;
+  run: ProofCourtRun | null;
+  integrationStatus: IntegrationStatus | null;
 }
 
-export default function SponsorProofPanels({ state, isTampered }: Props) {
-  const isAxlActive = ['commit_running', 'execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
+export default function SponsorProofPanels({ state, isTampered, run, integrationStatus }: Props) {
+  const isAxlActive = ['permit_issued', 'payout_locked', 'commit_running', 'execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
   const isKeeperActive = ['execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
   const isZeroGActive = ['evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
+  const visibleMessages = run?.axlMessages ?? [];
+  const keeperReceipt = run?.keeperHubReceipt;
+  const keeperPhases = [
+    run?.proofTrialReceipt,
+    run?.keeperHubReceipt,
+    run?.settlementKeeperHubReceipt,
+  ].filter(Boolean);
+  const evidence = run?.evidence;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -21,34 +32,44 @@ export default function SponsorProofPanels({ state, isTampered }: Props) {
         <div className="flex items-center gap-2 mb-4 border-b border-white/5 pb-3">
           <Terminal className="w-4 h-4 text-primary" />
           <h4 className="text-xs font-bold uppercase tracking-widest">AXL Message Log</h4>
+          <IntegrationBadge status={integrationStatus?.axl} />
         </div>
         <div className="flex-1 font-mono text-[10px] space-y-3 overflow-y-auto custom-scrollbar">
           {!isAxlActive ? (
             <div className="text-white/20 italic">Awaiting communication...</div>
           ) : (
             <>
-              <div className="text-green-500/80">
-                <span className="text-white/20">[14:16:01]</span> ID: axl_839... <br />
-                STRATEGY -&gt; JUDGE: WORKFLOW_REQUESTED
-              </div>
-              <div className="text-green-500/80">
-                <span className="text-white/20">[14:16:03]</span> ID: axl_840... <br />
-                JUDGE -&gt; EXECUTOR: PERMIT_APPROVED
-              </div>
-              <div className="text-primary/80 animate-pulse">
-                <span className="text-white/20">[14:16:05]</span> ID: axl_841... <br />
-                EXECUTOR -&gt; JUDGE: READY_TO_COMMIT
-              </div>
-              {isKeeperActive && (
-                <div className="text-green-500/80">
-                  <span className="text-white/20">[14:16:08]</span> ID: axl_842... <br />
-                  EXECUTOR -&gt; JUDGE: EXEC_RECEIPT_SUBMITTED
+              {visibleMessages.map((message, index) => (
+                <div
+                  key={message.id}
+                  className={cn(
+                    "text-green-500/80",
+                    index === visibleMessages.length - 1 && !isZeroGActive && "text-primary/80 animate-pulse",
+                  )}
+                >
+                  <span className="text-white/20">[{new Date(message.timestamp).toLocaleTimeString()}]</span> ID: {message.id} <br />
+                  {message.from.toUpperCase()} -&gt; {message.to.toUpperCase()}: {message.type}
+                  {message.messageId && <div className="text-white/25">message: {message.messageId}</div>}
+                  {message.envelope && <div className="text-white/25">envelope: {message.envelope.toUpperCase()}</div>}
+                  {message.nodeId && <div className="text-white/25">node: {message.nodeId}</div>}
+                  {message.payloadHash && <div className="text-white/20">payload: {message.payloadHash}</div>}
+                  <div className="text-white/20">hash: {message.hash}</div>
+                  {message.mode && <div className="text-white/15">mode: {message.mode}</div>}
+                </div>
+              ))}
+              {evidence?.axlTranscriptHash && (
+                <div className="border-t border-white/5 pt-2 text-primary/80">
+                  transcript: {evidence.axlTranscriptHash}
                 </div>
               )}
-              {isZeroGActive && (
-                <div className="text-green-500/80">
-                  <span className="text-white/20">[14:16:10]</span> ID: axl_843... <br />
-                  JUDGE -&gt; STRATEGY: PROOF_VERIFIED
+              {integrationStatus?.axl?.nodes && integrationStatus.axl.nodes.length > 0 && (
+                <div className="border-t border-white/5 pt-2">
+                  <div className="mb-1 text-[9px] uppercase tracking-widest text-white/30">AXL Topology</div>
+                  {integrationStatus.axl.nodes.map((node) => (
+                    <div key={`${node.role}-${node.endpoint}`} className="text-white/25">
+                      {node.role}: {node.nodeId ?? 'offline'} / peers {node.peerCount} / {node.status}
+                    </div>
+                  ))}
                 </div>
               )}
             </>
@@ -61,6 +82,7 @@ export default function SponsorProofPanels({ state, isTampered }: Props) {
         <div className="flex items-center gap-2 mb-4 border-b border-white/5 pb-3">
           <Code className="w-4 h-4 text-primary" />
           <h4 className="text-xs font-bold uppercase tracking-widest">KeeperHub Receipt</h4>
+          <IntegrationBadge status={integrationStatus?.keeperHub} />
         </div>
         <div className="flex-1 flex flex-col justify-center">
           {!isKeeperActive ? (
@@ -71,25 +93,55 @@ export default function SponsorProofPanels({ state, isTampered }: Props) {
           ) : (
             <div className="space-y-4 font-mono text-[11px] bg-black/40 p-4 border border-white/5 rounded-sm">
               <div className="flex justify-between">
-                <span className="text-white/40">Workflow ID:</span>
-                <span>kh_12345</span>
+                <span className="text-white/40">Execution ID:</span>
+                <span>{keeperReceipt?.executionId ?? keeperReceipt?.workflowId ?? 'kh_pending'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-white/40">Status:</span>
-                <span className="text-green-500">Completed</span>
+                <span className="text-green-500">{keeperReceipt?.status ?? 'Completed'}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-white/40">Action:</span>
-                <span>vaultDeposit(1 ETH)</span>
+                <span>{keeperReceipt?.action ?? 'vaultDeposit(1 ETH)'}</span>
               </div>
               <div className="flex flex-col gap-1 border-t border-white/5 pt-3">
                 <span className="text-white/40">Tx Hash:</span>
-                <span className="text-[10px] break-all">{isTampered ? "0xDEAD...BEEF" : "0xabc...789"}</span>
+                <span className="text-[10px] break-all">{keeperReceipt?.txHash || (isTampered ? "0xDEAD...BEEF" : "0xabc...789")}</span>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-white/40">Log Hash:</span>
+                <span className="text-[10px] break-all">{keeperReceipt?.logHash ?? 'pending'}</span>
               </div>
               <div className="flex justify-between text-[10px]">
                 <span className="text-white/20">Gas Optimized:</span>
-                <span className="text-white/40">Yes</span>
+                <span className="text-white/40">{keeperReceipt?.gasOptimized ? 'Yes' : 'Pending'}</span>
               </div>
+              <div className="flex justify-between text-[10px]">
+                <span className="text-white/20">Retry Count:</span>
+                <span className="text-white/40">{keeperReceipt?.retryCount ?? 0}</span>
+              </div>
+              {keeperReceipt?.logs?.slice(-2).map((entry) => (
+                <div key={`${entry.node}-${entry.timestamp}`} className="border-t border-white/5 pt-2 text-[9px] text-white/35">
+                  <span className="text-white/60">{entry.node}</span>: {entry.message}
+                </div>
+              ))}
+              {keeperPhases.length > 0 && (
+                <div className="border-t border-white/5 pt-2 space-y-1">
+                  <div className="text-[9px] uppercase tracking-widest text-white/30">Phase Receipts</div>
+                  {keeperPhases.map((phase) => (
+                    <div key={`${phase!.phase}-${phase!.executionId ?? phase!.workflowId}`} className="text-[9px] text-white/40">
+                      <span className="text-white/60">{phase!.phase ?? 'execute-mandate'}</span>
+                      {' '}id {phase!.executionId ?? phase!.workflowId}
+                      {phase!.logHash && <span> / log {phase!.logHash.slice(0, 12)}</span>}
+                    </div>
+                  ))}
+                  {integrationStatus?.keeperHub?.workflows?.map((workflow) => (
+                    <div key={`${workflow.phase}-${workflow.workflowId}`} className="text-[8px] text-white/25">
+                      configured {workflow.phase}: {workflow.workflowId}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -100,6 +152,7 @@ export default function SponsorProofPanels({ state, isTampered }: Props) {
         <div className="flex items-center gap-2 mb-4 border-b border-white/5 pb-3">
           <Database className="w-4 h-4 text-primary" />
           <h4 className="text-xs font-bold uppercase tracking-widest">0G Evidence</h4>
+          <IntegrationBadge status={integrationStatus?.zeroG} />
         </div>
         <div className="flex-1 flex flex-col">
           {!isZeroGActive ? (
@@ -114,23 +167,84 @@ export default function SponsorProofPanels({ state, isTampered }: Props) {
                     "text-xs font-mono font-bold break-all",
                     isTampered ? "text-red-500" : "text-primary"
                 )}>
-                    {isTampered ? "0g-root-TAMPERED-xyz" : "0g-root-abc123"}
+                    {evidence?.root || (isTampered ? "0g-root-TAMPERED-xyz" : "0g-root-abc123")}
                 </div>
               </div>
               
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-[9px] uppercase font-bold text-white/40">
                   <span>Storage Mode</span>
-                  <span className="text-white">KV + Log</span>
+                  <span className="text-white">{evidence?.storageMode ?? '0G Storage'}</span>
+                </div>
+                <div className="flex items-center justify-between text-[9px] uppercase font-bold text-white/40">
+                  <span>Source</span>
+                  <span className="text-white">{evidence?.source ?? 'pending'}</span>
                 </div>
                 <div className="flex items-center justify-between text-[9px] uppercase font-bold text-white/40">
                   <span>Persistence</span>
-                  <span className="text-green-500">Verified</span>
+                  <span className={cn(isTampered ? "text-red-500" : "text-green-500")}>
+                    {evidence?.verificationResult === 'FAIL' ? 'Failed' : 'Verified'}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between text-[9px] uppercase font-bold text-white/40">
-                  <span>Bundles</span>
-                  <span className="text-white">4 Items</span>
+                  <span>Bundle Bytes</span>
+                  <span className="text-white">{evidence?.byteSize ?? 0}</span>
                 </div>
+                {evidence?.bundleHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>Bundle Hash</span>
+                    <span className="break-all text-white/70 normal-case">{evidence.bundleHash}</span>
+                  </div>
+                )}
+                {evidence?.txHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>0G Storage Tx</span>
+                    <span className="break-all text-white/70 normal-case">{evidence.txHash}</span>
+                  </div>
+                )}
+                {evidence?.verdictHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>0G Compute Verdict</span>
+                    <span className="break-all text-white/70 normal-case">{evidence.verdictHash}</span>
+                    <span className="text-white/35 normal-case">
+                      {evidence.verdictModel ?? evidence.verdictSource ?? 'pending'} / {Math.round((evidence.verdictConfidence ?? 0) * 100)}%
+                    </span>
+                    {evidence.verdictReason && (
+                      <span className="text-white/35 normal-case">{evidence.verdictReason}</span>
+                    )}
+                    {evidence.verdictAttestationHash && (
+                      <span className="break-all text-white/45 normal-case">attestation: {evidence.verdictAttestationHash}</span>
+                    )}
+                  </div>
+                )}
+                {evidence?.verdictTxHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>Verdict Tx</span>
+                    <span className="break-all text-white/70 normal-case">{evidence.verdictTxHash}</span>
+                  </div>
+                )}
+                <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                  <span>Keeper Receipt Hash</span>
+                  <span className="break-all text-white/70 normal-case">{evidence?.keeperHubReceiptHash ?? 'pending'}</span>
+                </div>
+                {evidence?.verificationHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>Verification Hash</span>
+                    <span className="break-all text-white/70 normal-case">{evidence.verificationHash}</span>
+                  </div>
+                )}
+                {run?.settlementReceipt?.commitTxHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>Commit Tx</span>
+                    <span className="break-all text-white/70 normal-case">{run.settlementReceipt.commitTxHash}</span>
+                  </div>
+                )}
+                {run?.settlementReceipt?.abortTxHash && (
+                  <div className="flex flex-col gap-1 text-[9px] uppercase font-bold text-white/40">
+                    <span>Abort Tx</span>
+                    <span className="break-all text-red-300/80 normal-case">{run.settlementReceipt.abortTxHash}</span>
+                  </div>
+                )}
               </div>
 
               <div className={cn(
@@ -154,5 +268,23 @@ export default function SponsorProofPanels({ state, isTampered }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function IntegrationBadge({ status }: { status?: IntegrationHealth }) {
+  const isLiveReady = status?.configured;
+
+  return (
+    <span
+      className={cn(
+        'ml-auto rounded-sm border px-2 py-1 text-[8px] font-bold uppercase tracking-widest',
+        isLiveReady
+          ? 'border-green-500/30 bg-green-500/10 text-green-400'
+          : 'border-red-500/30 bg-red-500/10 text-red-300',
+      )}
+      title={status?.endpoint ?? 'No endpoint configured'}
+    >
+      {isLiveReady ? 'Live' : 'Needs Config'}
+    </span>
   );
 }

@@ -7,10 +7,12 @@ interface Props {
   state: AppState;
   onTamper: () => void;
   onRestore: () => void;
+  onReplay: () => void;
   isTampered: boolean;
+  replayedFromZeroG: boolean;
 }
 
-export default function TamperTestPanel({ state, onTamper, onRestore, isTampered }: Props) {
+export default function TamperTestPanel({ state, onTamper, onRestore, onReplay, isTampered, replayedFromZeroG }: Props) {
   const isEnabled = ['execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
 
   return (
@@ -45,6 +47,27 @@ export default function TamperTestPanel({ state, onTamper, onRestore, isTampered
           <RefreshCw className={cn("w-3 h-3", isTampered && "animate-spin")} />
           RESTORE VALID EVIDENCE
         </button>
+
+        <button
+          onClick={onReplay}
+          disabled={!isEnabled}
+          className="w-full py-3 bg-primary/10 border border-primary/30 text-primary rounded-sm font-bold text-xs flex items-center justify-center gap-2 hover:bg-primary/20 transition-all disabled:opacity-30 disabled:pointer-events-none"
+        >
+          <ShieldCheck className="w-3 h-3" />
+          REPLAY SCORE FROM 0G
+        </button>
+
+        {replayedFromZeroG && (
+          <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-sm">
+            <div className="flex items-center gap-2 mb-1">
+              <ShieldCheck className="w-4 h-4 text-green-400" />
+              <span className="text-[10px] font-bold text-green-400 uppercase tracking-widest">0G Replay Verified</span>
+            </div>
+            <p className="text-[10px] text-white/70 leading-tight">
+              Local state was reconstructed from stored case evidence. Trust score is tied to receipt history, not UI state.
+            </p>
+          </div>
+        )}
 
         {isTampered && (
           <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-sm">
