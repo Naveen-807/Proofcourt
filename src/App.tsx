@@ -16,6 +16,7 @@ import {
 
 // Components
 import Header from './components/Header';
+import CourthouseGallery from './components/CourthouseGallery';
 import IntentInput from './components/IntentInput';
 import WorkflowCanvas from './components/WorkflowCanvas';
 import AgentRegistry from './components/AgentRegistry';
@@ -27,6 +28,7 @@ import FinalProofSummary from './components/FinalProofSummary';
 
 export default function App() {
   const { address, isConnected } = useAccount();
+  const [activeTab, setActiveTab] = useState<'court' | 'gallery'>('court');
   const [state, setState] = useState<AppState>('idle');
   const [agents, setAgents] = useState<Agent[]>(INITIAL_AGENTS);
   const [isTampered, setIsTampered] = useState(false);
@@ -147,8 +149,33 @@ export default function App() {
            style={{ backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,1) 0, rgba(255,255,255,1) 1px, transparent 1px, transparent 24px)' }} />
       
       <Header />
+
+      {/* Tab bar */}
+      <div className="fixed top-20 left-0 right-0 z-40 border-b border-white/5 bg-[#050505]/90 backdrop-blur-xl">
+        <div className="max-w-[1440px] mx-auto px-10 flex items-center gap-0 h-10">
+          {(['court', 'gallery'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={cn(
+                'h-full px-5 text-[10px] font-bold uppercase tracking-widest border-b-2 transition-colors',
+                activeTab === tab
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-white/30 hover:text-white/60',
+              )}
+            >
+              {tab === 'court' ? '⚖️ Court' : '🏛️ Gallery'}
+            </button>
+          ))}
+        </div>
+      </div>
       
-      <main className="max-w-[1440px] mx-auto px-10 pt-32 pb-32 relative z-10 flex flex-col gap-16">
+      <main className="max-w-[1440px] mx-auto px-10 pt-36 pb-32 relative z-10 flex flex-col gap-16">
+
+        {activeTab === 'gallery' ? (
+          <CourthouseGallery />
+        ) : (
+        <>
         <section className={cn("transition-all duration-1000 ease-in-out", state !== 'idle' ? "opacity-60 scale-[0.98] blur-sm pointer-events-none" : "opacity-100")}>
           <IntentInput onGenerate={handleGenerate} isReady={state === 'idle'} />
         </section>
@@ -197,6 +224,8 @@ export default function App() {
               <FinalProofSummary state={state} run={run} />
             </div>
           </motion.div>
+        )}
+        </>
         )}
       </main>
     </div>

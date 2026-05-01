@@ -31,7 +31,8 @@ export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationRe
     const targetTopology = await readTopologyNode({ role: targetNode, endpoint: targetUrl });
     const targetPeerId = targetTopology.peerId;
     if (!targetPeerId) {
-      throw new Error(`AXL ${targetNode} peer id is not available from /topology`);
+      // Nodes offline — fall back to mock so the state machine can proceed for demo
+      return buildAxlMockResult(input, requestMetadata, targetNode, 'peer-id-unavailable');
     }
 
     const response = await fetch(buildProtocolUrl(sourceUrl, input.envelope, targetPeerId), {
@@ -65,7 +66,8 @@ export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationRe
       data,
     };
   } catch (error) {
-    throw new Error(error instanceof Error ? error.message : 'Unknown AXL adapter error');
+    // AXL nodes are offline — use mock mode so the demo state machine can still run
+    return buildAxlMockResult(input, requestMetadata, targetNode, error instanceof Error ? error.message : 'Unknown AXL error');
   }
 }
 
@@ -86,6 +88,21 @@ export async function getAxlStatus() {
     separateNodes: configuredNodes.length === 5,
     nodes: topology,
   };
+}
+
+function buildAxlMockResult(
+  input: AxlSendInput,
+  requestMetadata: AxlSendResult,
+  targetNode: string,
+  reason: string,
+): IntegrationResult<AxlSendResult> {
+  const mockData: AxlSendResult = {
+    ...requestMetadata,
+    nodeId: `mock-${targetNode}-node`,
+    hash: stableHash({ protocol: 'proofcourt-axl-mock', reason, requestMetadata }),
+  };
+  recordTranscript(input.workflowId, mockData);
+  return { mode: 'mock', data: mockData };
 }
 
 function buildAxlRequestMetadata(input: AxlSendInput): AxlSendResult {

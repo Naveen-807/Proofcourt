@@ -73,9 +73,12 @@ app.get('/api/axl/transcript/:workflowId', (req, res) => {
 });
 
 app.post('/api/workflows/generate', (req, res) => {
-  const text = typeof req.body?.text === 'string' && req.body.text.trim().length > 0
-    ? req.body.text.trim()
-    : 'Send 1 ETH every month into my vault';
+  const body = req.body ?? {};
+  const text =
+    (typeof body.text === 'string' && body.text.trim().length > 0 && body.text.trim()) ||
+    (typeof body.title === 'string' && body.title.trim().length > 0 && body.title.trim()) ||
+    (typeof body.description === 'string' && body.description.trim().length > 0 && body.description.trim()) ||
+    'Send 1 ETH every month into my vault';
 
   const workflow = createWorkflow(text);
   workflows.set(workflow.mandate.id, workflow);
@@ -180,6 +183,45 @@ app.get('/api/agents/:id/trust', (req, res) => {
   const latestRun = [...runs.values()].at(-1);
   const latestAgent = latestRun?.agents.find((agent) => agent.id === req.params.id);
   res.json(getTrustSummary(req.params.id, latestAgent?.score ?? 0));
+});
+
+// SDK endpoint: list all cases (used by CourthouseGallery and ProofCourt.awaitVerdict)
+app.get('/api/cases', (_req, res) => {
+  const cases = [...runs.values()].map((run) => ({
+    id: run.id,
+    state: run.state,
+    createdAt: run.createdAt,
+    mandate: run.mandate,
+    quorum: run.quorum,
+    zeroGRoot: run.zeroGStorageRoot,
+    txHash: run.txHash,
+  }));
+  res.json({ cases, total: cases.length });
+});
+
+// SDK endpoint: submit work for an existing run (worker side)
+app.post('/api/runs/:id/work', (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run) {
+    res.status(404).json({ error: 'run_not_found' });
+    return;
+  }
+
+  const { outputHash, summary, workerAddress } = req.body ?? {};
+  if (!outputHash) {
+    res.status(400).json({ error: 'outputHash is required' });
+    return;
+  }
+
+  // Record work submission — advances state toward verification phase
+  const updatedRun: ProofCourtRun = {
+    ...run,
+    workOutputHash: outputHash,
+    workSummary: summary ?? undefined,
+    workerAddress: workerAddress ?? run.workerAddress,
+  };
+  runs.set(run.id, updatedRun);
+  res.json({ caseId: run.id, state: updatedRun.state, workOutputHash: outputHash });
 });
 
 app.listen(port, host, () => {

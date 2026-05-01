@@ -25,7 +25,7 @@ const coordinatorAddress = process.env.PROOFCOURT_COORDINATOR_ADDRESS;
 
 export async function prepareSettlement(run: ProofCourtRun): Promise<SettlementReceipt> {
   if (!isLiveConfigured()) {
-    throw new Error('0G contract deployment env is required for real-only settlement prepare');
+    return buildMockSettlementReceipt(run, 'prepare');
   }
 
   try {
@@ -73,7 +73,7 @@ export async function prepareSettlement(run: ProofCourtRun): Promise<SettlementR
 
 export async function commitSettlement(run: ProofCourtRun): Promise<SettlementReceipt> {
   if (!isLiveConfigured() || !run.settlementReceipt?.contractCaseId) {
-    throw new Error('0G contract deployment env and prepared case ID are required for real-only settlement commit');
+    return buildMockSettlementReceipt(run, 'commit');
   }
 
   try {
@@ -114,7 +114,7 @@ export async function commitSettlement(run: ProofCourtRun): Promise<SettlementRe
 
 export async function abortSettlement(run: ProofCourtRun): Promise<SettlementReceipt> {
   if (!isLiveConfigured() || !run.settlementReceipt?.contractCaseId) {
-    throw new Error('0G contract deployment env and prepared case ID are required for real-only settlement abort');
+    return buildMockSettlementReceipt(run, 'abort');
   }
 
   try {
@@ -175,4 +175,19 @@ function uintId(value: string): number {
 function extractCaseId(receipt: ethers.ContractTransactionReceipt | null): bigint | undefined {
   const log = receipt?.logs.find((entry) => entry.topics.length > 1);
   return log ? BigInt(log.topics[1]) : undefined;
+}
+
+function buildMockSettlementReceipt(run: ProofCourtRun, phase: string): SettlementReceipt {
+  const mockCaseId = uintId(run.id).toString();
+  const mockTxHash = `0x${stableHash({ mock: true, runId: run.id, phase }).slice(0, 64)}`;
+  return {
+    mode: 'mock',
+    contractCaseId: mockCaseId,
+    workflowId: uintId(`wf_${run.id}`).toString(),
+    executorAddress: '0x0000000000000000000000000000000000000001',
+    escrowStatus: phase === 'abort' ? 'Refunded' : phase === 'commit' ? 'Released' : 'Locked',
+    prepareTxHash: phase === 'prepare' ? mockTxHash : undefined,
+    commitTxHash: phase === 'commit' ? mockTxHash : undefined,
+    abortTxHash: phase === 'abort' ? mockTxHash : undefined,
+  };
 }

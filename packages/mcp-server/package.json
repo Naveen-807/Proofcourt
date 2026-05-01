@@ -1,7 +1,18 @@
 {
   "name": "@proofcourt/mcp-server",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "MCP server exposing 6 ProofCourt tools — createCase, submitWork, getCase, getReputation, replayCase, settleCase",
   "type": "module",
   "private": true,
-  "main": "./src/index.ts"
+  "main": "./src/index.ts",
+  "bin": {
+    "proofcourt-mcp": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts"
+  },
+  "keywords": ["proofcourt", "mcp", "ai-agents", "web3", "trust-layer"],
+  "engines": {
+    "node": ">=22"
+  }
 }

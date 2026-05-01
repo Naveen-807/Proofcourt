@@ -1,10 +1,16 @@
 {
   "name": "@proofcourt/sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "The Trust Layer SDK for autonomous agents — create cases, submit work, and await verdicts from the 3-verifier jury",
   "type": "module",
   "private": true,
   "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "keywords": ["proofcourt", "ai-agents", "web3", "verification", "trust-layer"],
+  "engines": {
+    "node": ">=18"
   }
 }

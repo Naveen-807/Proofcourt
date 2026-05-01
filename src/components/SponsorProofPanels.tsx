@@ -287,7 +287,7 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
               ? 'border-green-500/30 bg-green-500/10 text-green-400'
               : 'border-red-500/30 bg-red-500/10 text-red-300',
           )}>
-            Quorum {quorum.reached ? 'Reached' : 'Failed'} — {quorum.passed}/3 PASS
+            Quorum {quorum.reached ? 'Closed' : 'Incomplete'} — {quorum.passed} PASS / {quorum.failed} FAIL
           </span>
         )}
         {!quorum && isJuryActive && (
@@ -307,6 +307,7 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
             const verdict = verdicts.find((v) => v.verifierId === vid);
             const isPending = !verdict;
             const passed = verdict?.decision === 'PASS';
+            const offline = verdict?.decision === 'OFFLINE';
 
             return (
               <div
@@ -315,6 +316,8 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
                   'p-3 rounded-sm border font-mono text-[10px] space-y-2',
                   isPending
                     ? 'border-white/10 bg-black/20'
+                    : offline
+                    ? 'border-yellow-500/30 bg-yellow-500/5'
                     : passed
                     ? 'border-green-500/30 bg-green-500/5'
                     : 'border-red-500/30 bg-red-500/5',
@@ -329,11 +332,13 @@ export default function SponsorProofPanels({ state, isTampered, run, integration
                     'text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-sm',
                     isPending
                       ? 'bg-white/10 text-white/40'
+                      : offline
+                      ? 'bg-yellow-500/20 text-yellow-400'
                       : passed
                       ? 'bg-green-500/20 text-green-400'
                       : 'bg-red-500/20 text-red-400',
                   )}>
-                    {isPending ? '...' : verdict.decision}
+                    {isPending ? '...' : offline ? 'OFFLINE' : verdict.decision}
                   </span>
                 </div>
                 {verdict && (
