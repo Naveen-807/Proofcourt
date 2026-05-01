@@ -1,0 +1,7 @@
+{
+  "name": "@proofcourt/mcp-server",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "./src/index.ts"
+}
