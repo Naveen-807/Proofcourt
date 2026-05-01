@@ -1,20 +1,34 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 
 const nodes = [
-  ['owner', '3001'],
-  ['specialist', '3002'],
-  ['executor', '3003'],
-  ['judge', '3004'],
+  ['requester', '9002'],
+  ['worker', '9012'],
+  ['verifier-1', '9022'],
+  ['verifier-2', '9032'],
+  ['verifier-3', '9042'],
 ];
 
-const children = nodes.map(([role, port]) => {
-  const child = spawn('node', ['scripts/axl-local-node.mjs', role, port], {
+const axlBin = path.resolve('bin/axl');
+
+if (!existsSync(axlBin)) {
+  console.error('Missing real AXL binary at bin/axl. Run: npm run setup:axl');
+  process.exit(1);
+}
+
+const children = nodes.map(([role]) => {
+  const configPath = path.resolve('axl-data', role, 'node-config.json');
+  if (!existsSync(configPath)) {
+    console.error(`Missing AXL config for ${role} at ${configPath}. Run: npm run setup:axl`);
+    process.exit(1);
+  }
+
+  const child = spawn(axlBin, ['-config', configPath], {
     stdio: 'inherit',
     env: {
       ...process.env,
       AXL_ROLE: role,
-      AXL_PORT: port,
-      AXL_PEERS: nodes.map(([, peerPort]) => peerPort).join(','),
     },
   });
 

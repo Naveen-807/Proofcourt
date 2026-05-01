@@ -3,53 +3,57 @@ import type { AxlSendInput, AxlSendResult, AxlTopologyNode, IntegrationResult } 
 
 const axlNodeUrl = process.env.AXL_NODE_URL;
 const axlNodeUrls = {
-  owner: process.env.AXL_OWNER_NODE_URL ?? process.env.AXL_STRATEGY_NODE_URL ?? axlNodeUrl,
-  specialist: process.env.AXL_SPECIALIST_NODE_URL ?? axlNodeUrl,
-  executor: process.env.AXL_EXECUTOR_NODE_URL ?? axlNodeUrl,
-  judge: process.env.AXL_JUDGE_NODE_URL ?? axlNodeUrl,
+  requester: process.env.AXL_REQUESTER_NODE_URL ?? process.env.AXL_OWNER_NODE_URL ?? process.env.AXL_STRATEGY_NODE_URL ?? axlNodeUrl,
+  worker: process.env.AXL_WORKER_NODE_URL ?? process.env.AXL_EXECUTOR_NODE_URL ?? axlNodeUrl,
+  verifier1: process.env.AXL_VERIFIER_1_NODE_URL ?? process.env.AXL_SPECIALIST_NODE_URL ?? axlNodeUrl,
+  verifier2: process.env.AXL_VERIFIER_2_NODE_URL ?? process.env.AXL_JUDGE_NODE_URL ?? axlNodeUrl,
+  verifier3: process.env.AXL_VERIFIER_3_NODE_URL ?? axlNodeUrl,
 };
 
 const transcriptByWorkflow = new Map<string, AxlSendResult[]>();
+type AxlRole = keyof typeof axlNodeUrls;
 
 export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationResult<AxlSendResult>> {
   const requestMetadata = buildAxlRequestMetadata(input);
+  const sourceNode = resolveNode(input.from);
   const targetNode = resolveNode(input.to);
+  const sourceUrl = axlNodeUrls[sourceNode];
   const targetUrl = axlNodeUrls[targetNode];
 
+  if (!sourceUrl) {
+    throw new Error(`AXL ${sourceNode} node URL is not configured`);
+  }
   if (!targetUrl) {
     throw new Error(`AXL ${targetNode} node URL is not configured`);
   }
 
   try {
-    const response = await fetch(`${targetUrl.replace(/\/$/, '')}/send`, {
+    const targetTopology = await readTopologyNode({ role: targetNode, endpoint: targetUrl });
+    const targetPeerId = targetTopology.peerId;
+    if (!targetPeerId) {
+      throw new Error(`AXL ${targetNode} peer id is not available from /topology`);
+    }
+
+    const response = await fetch(buildProtocolUrl(sourceUrl, input.envelope, targetPeerId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        envelope: input.envelope,
-        workflowId: input.workflowId,
-        from: input.from,
-        to: input.to,
-        type: input.type,
-        payload: input.payload,
-        nodeRole: targetNode,
-        messageId: requestMetadata.messageId,
-        payloadHash: requestMetadata.payloadHash,
-      }),
+      body: JSON.stringify(buildProtocolBody(input, requestMetadata)),
     });
 
     if (!response.ok) {
-      throw new Error(`AXL node returned ${response.status}`);
+      const text = await response.text().catch(() => '');
+      throw new Error(`AXL ${input.envelope} route returned ${response.status}${text ? `: ${text.slice(0, 180)}` : ''}`);
     }
 
-    const body = await response.json() as Partial<AxlSendResult>;
+    const body = await readJsonOrEmpty(response);
     const data = {
-      id: body.id ?? requestMetadata.id,
-      nodeId: body.nodeId ?? requestMetadata.nodeId,
-      messageId: body.messageId ?? body.id ?? requestMetadata.messageId,
-      envelope: body.envelope ?? requestMetadata.envelope,
-      hash: body.hash ?? requestMetadata.hash,
-      payloadHash: body.payloadHash ?? requestMetadata.payloadHash,
-      timestamp: body.timestamp ?? requestMetadata.timestamp,
+      id: stringField(body, ['id', 'messageId']) ?? requestMetadata.id,
+      nodeId: targetTopology.nodeId ?? targetPeerId,
+      messageId: stringField(body, ['messageId', 'id']) ?? requestMetadata.messageId,
+      envelope: requestMetadata.envelope,
+      hash: stringField(body, ['hash']) ?? stableHash({ protocol: 'proofcourt-axl-v2', requestMetadata, body }),
+      payloadHash: requestMetadata.payloadHash,
+      timestamp: stringField(body, ['timestamp']) ?? requestMetadata.timestamp,
     };
     if (!data.nodeId || !data.messageId || !data.hash || !data.payloadHash) {
       throw new Error(`AXL ${targetNode} node returned an incomplete receipt`);
@@ -76,10 +80,10 @@ export async function getAxlStatus() {
   const topology = await Promise.all(configuredNodes.map(readTopologyNode));
 
   return {
-    configured: configuredNodes.length === 4,
-    mode: configuredNodes.length === 4 ? 'live' : 'not-configured',
+    configured: configuredNodes.length === 5,
+    mode: configuredNodes.length === 5 ? 'live' : 'not-configured',
     endpoint: axlNodeUrl ?? null,
-    separateNodes: configuredNodes.length === 4,
+    separateNodes: configuredNodes.length === 5,
     nodes: topology,
   };
 }
@@ -99,12 +103,13 @@ function buildAxlRequestMetadata(input: AxlSendInput): AxlSendResult {
   };
 }
 
-function resolveNode(agentName: string): keyof typeof axlNodeUrls {
+function resolveNode(agentName: string): AxlRole {
   const normalized = agentName.toLowerCase();
-  if (normalized.includes('executor')) return 'executor';
-  if (normalized.includes('specialist')) return 'specialist';
-  if (normalized.includes('judge') || normalized.includes('core')) return 'judge';
-  return 'owner';
+  if (normalized.includes('worker') || normalized.includes('executor')) return 'worker';
+  if (normalized.includes('verifier-3')) return 'verifier3';
+  if (normalized.includes('verifier-2') || normalized.includes('judge') || normalized.includes('core')) return 'verifier2';
+  if (normalized.includes('verifier-1') || normalized.includes('specialist')) return 'verifier1';
+  return 'requester';
 }
 
 function recordTranscript(workflowId: string, result: AxlSendResult) {
@@ -112,7 +117,57 @@ function recordTranscript(workflowId: string, result: AxlSendResult) {
   transcriptByWorkflow.set(workflowId, [...existing, result]);
 }
 
-async function readTopologyNode(node: { role: string; endpoint: string }): Promise<AxlTopologyNode> {
+function buildProtocolUrl(sourceUrl: string, envelope: AxlSendInput['envelope'], targetPeerId: string): string {
+  const base = sourceUrl.replace(/\/$/, '');
+  if (envelope === 'mcp') return `${base}/mcp/${encodeURIComponent(targetPeerId)}/proofcourt`;
+  return `${base}/a2a/${encodeURIComponent(targetPeerId)}`;
+}
+
+function buildProtocolBody(input: AxlSendInput, requestMetadata: AxlSendResult): Record<string, unknown> {
+  if (input.envelope === 'mcp') {
+    return {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      id: requestMetadata.messageId,
+      params: {
+        name: input.type,
+        arguments: {
+          workflowId: input.workflowId,
+          from: input.from,
+          to: input.to,
+          payload: input.payload,
+          payloadHash: requestMetadata.payloadHash,
+        },
+      },
+    };
+  }
+
+  return {
+    jsonrpc: '2.0',
+    method: 'SendMessage',
+    id: requestMetadata.messageId,
+    params: {
+      message: {
+        role: 'ROLE_USER',
+        messageId: requestMetadata.messageId,
+        parts: [
+          {
+            text: JSON.stringify({
+              workflowId: input.workflowId,
+              from: input.from,
+              to: input.to,
+              type: input.type,
+              payload: input.payload,
+              payloadHash: requestMetadata.payloadHash,
+            }),
+          },
+        ],
+      },
+    },
+  };
+}
+
+async function readTopologyNode(node: { role: string; endpoint: string }): Promise<AxlTopologyNode & { peerId?: string }> {
   try {
     const response = await fetch(`${node.endpoint.replace(/\/$/, '')}/topology`, {
       signal: AbortSignal.timeout(1200),
@@ -124,7 +179,8 @@ async function readTopologyNode(node: { role: string; endpoint: string }): Promi
     return {
       role: node.role,
       endpoint: node.endpoint,
-      nodeId: stringField(body, ['nodeId', 'id', 'peerId']) ?? `configured-${node.role}`,
+      nodeId: stringField(body, ['our_ipv6', 'nodeId', 'id', 'peerId']) ?? `configured-${node.role}`,
+      peerId: stringField(body, ['our_public_key', 'peerId', 'publicKey']),
       peerCount: numberField(body, ['peerCount', 'peersCount']) ?? peers.length,
       status: 'online',
     };
@@ -136,6 +192,17 @@ async function readTopologyNode(node: { role: string; endpoint: string }): Promi
       peerCount: 0,
       status: 'offline',
     };
+  }
+}
+
+async function readJsonOrEmpty(response: Response): Promise<Record<string, unknown>> {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : { value: parsed };
+  } catch {
+    return { value: text };
   }
 }
 
