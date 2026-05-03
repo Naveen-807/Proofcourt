@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Loader2, ShieldCheck, Unplug, Wallet } from 'lucide-react';
-import { useChainId, useConnect, useConnection, useDisconnect, useSwitchChain } from 'wagmi';
+import { useAccount, useChainId, useConnect, useDisconnect, useSwitchChain } from 'wagmi';
 import { hardhat } from 'viem/chains';
 import { zeroGGalileo } from '../web3/config';
 import { cn } from '../lib/utils';
@@ -8,7 +8,7 @@ import { cn } from '../lib/utils';
 const supportedChains = [zeroGGalileo, hardhat];
 
 export default function WalletPanel() {
-  const connection = useConnection();
+  const account = useAccount();
   const chainId = useChainId();
   const { connectors, connect, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
@@ -31,10 +31,10 @@ export default function WalletPanel() {
   }, [connectors]);
 
   const currentChain = supportedChains.find((chain) => chain.id === chainId);
-  const connected = connection.isConnected && connection.address;
+  const connected = account.isConnected && account.address;
   const unsupported = connected && !currentChain;
-  const displayAddress = connection.address
-    ? `${connection.address.slice(0, 6)}...${connection.address.slice(-4)}`
+  const displayAddress = account.address
+    ? `${account.address.slice(0, 6)}...${account.address.slice(-4)}`
     : '';
 
   if (!connected) {

@@ -14,3 +14,4 @@ axl-data/
 
 # Markdown (not versioned; add `!path/to/file.md` to track specific files)
 *.md
+.vercel
