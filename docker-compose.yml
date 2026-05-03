@@ -1,0 +1,104 @@
+name: proofcourt
+
+x-sponsor-env: &sponsor-env
+  RPC_URL: ${RPC_URL:-}
+  PRIVATE_KEY: ${PRIVATE_KEY:-}
+  EXECUTOR_PRIVATE_KEY: ${EXECUTOR_PRIVATE_KEY:-}
+  EXECUTOR_ADDRESS: ${EXECUTOR_ADDRESS:-}
+  JUDGE_ADDRESS: ${JUDGE_ADDRESS:-}
+  PROOFCOURT_ESCROW_ADDRESS: ${PROOFCOURT_ESCROW_ADDRESS:-}
+  WORK_REGISTRY_ADDRESS: ${WORK_REGISTRY_ADDRESS:-}
+  EVIDENCE_REGISTRY_ADDRESS: ${EVIDENCE_REGISTRY_ADDRESS:-}
+  AGENT_REPUTATION_ADDRESS: ${AGENT_REPUTATION_ADDRESS:-}
+  AGENT_INFT_ADDRESS: ${AGENT_INFT_ADDRESS:-}
+  PROOFCOURT_COORDINATOR_ADDRESS: ${PROOFCOURT_COORDINATOR_ADDRESS:-}
+  KEEPERHUB_API_URL: ${KEEPERHUB_API_URL:-https://app.keeperhub.com}
+  KEEPERHUB_API_KEY: ${KEEPERHUB_API_KEY:-}
+  KEEPERHUB_TRIAL_KEY: ${KEEPERHUB_TRIAL_KEY:-}
+  KEEPERHUB_EXECUTE_KEY: ${KEEPERHUB_EXECUTE_KEY:-}
+  KEEPERHUB_SETTLE_KEY: ${KEEPERHUB_SETTLE_KEY:-}
+  KEEPERHUB_TRIAL_WORKFLOW_ID: ${KEEPERHUB_TRIAL_WORKFLOW_ID:-}
+  KEEPERHUB_EXECUTE_WORKFLOW_ID: ${KEEPERHUB_EXECUTE_WORKFLOW_ID:-}
+  KEEPERHUB_SETTLEMENT_WORKFLOW_ID: ${KEEPERHUB_SETTLEMENT_WORKFLOW_ID:-}
+  KEEPERHUB_MCP_URL: ${KEEPERHUB_MCP_URL:-https://app.keeperhub.com/mcp}
+  KEEPERHUB_BUILD_AT_RUNTIME: ${KEEPERHUB_BUILD_AT_RUNTIME:-false}
+  ZERO_G_STORAGE_URL: ${ZERO_G_STORAGE_URL:-}
+  ZERO_G_INDEXER_RPC: ${ZERO_G_INDEXER_RPC:-https://indexer-storage-testnet-turbo.0g.ai}
+  ZERO_G_RPC_URL: ${ZERO_G_RPC_URL:-https://evmrpc-testnet.0g.ai}
+  ZERO_G_PRIVATE_KEY: ${ZERO_G_PRIVATE_KEY:-}
+  ZERO_G_API_KEY: ${ZERO_G_API_KEY:-}
+  ZERO_G_PROVIDER_ADDRESS: ${ZERO_G_PROVIDER_ADDRESS:-}
+  ZERO_G_PROVIDER_ENDPOINT: ${ZERO_G_PROVIDER_ENDPOINT:-}
+  ZERO_G_PROVIDER_MODEL: ${ZERO_G_PROVIDER_MODEL:-}
+  ZERO_G_CONTRACT_ADDRESS: ${ZERO_G_CONTRACT_ADDRESS:-}
+  ZERO_G_KV_NODE_URL: ${ZERO_G_KV_NODE_URL:-}
+
+services:
+  axl:
+    build: .
+    env_file:
+      - path: .env.local
+        required: false
+    command: npm run axl:local
+    environment:
+      AXL_REQUESTER_NODE_URL: http://axl:9002
+      AXL_WORKER_NODE_URL: http://axl:9012
+      AXL_VERIFIER_1_NODE_URL: http://axl:9022
+      AXL_VERIFIER_2_NODE_URL: http://axl:9032
+      AXL_VERIFIER_3_NODE_URL: http://axl:9042
+    ports:
+      - "9002:9002"
+      - "9012:9012"
+      - "9022:9022"
+      - "9032:9032"
+      - "9042:9042"
+
+  api:
+    build: .
+    env_file:
+      - path: .env.local
+        required: false
+    command: npm run api
+    environment:
+      <<: *sponsor-env
+      PROOFCOURT_API_HOST: 0.0.0.0
+      PROOFCOURT_API_PORT: 8787
+      AXL_REQUESTER_NODE_URL: http://axl:9002
+      AXL_WORKER_NODE_URL: http://axl:9012
+      AXL_VERIFIER_1_NODE_URL: http://axl:9022
+      AXL_VERIFIER_2_NODE_URL: http://axl:9032
+      AXL_VERIFIER_3_NODE_URL: http://axl:9042
+    ports:
+      - "8787:8787"
+    depends_on:
+      - axl
+
+  web:
+    build: .
+    env_file:
+      - path: .env.local
+        required: false
+    command: npm run dev -- --host 0.0.0.0
+    environment:
+      VITE_PROOFCOURT_API_URL: http://localhost:8787
+      VITE_AGENT_INFT_ADDRESS: ${AGENT_INFT_ADDRESS:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  mcp:
+    build: .
+    env_file:
+      - path: .env.local
+        required: false
+    command: node --experimental-strip-types packages/mcp-server/src/index.ts
+    environment:
+      <<: *sponsor-env
+      PROOFCOURT_API_URL: http://api:8787
+      PROOFCOURT_MCP_HTTP_HOST: 0.0.0.0
+      PROOFCOURT_MCP_HTTP_PORT: 8788
+    ports:
+      - "8788:8788"
+    depends_on:
+      - api

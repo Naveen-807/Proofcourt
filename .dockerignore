@@ -1,0 +1,8 @@
+node_modules
+dist
+.proofcourt
+artifacts
+deployments
+.env
+.env.local
+.git
