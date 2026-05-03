@@ -13,12 +13,16 @@
  *
  * Usage:
  *   PROOFCOURT_API_URL=http://localhost:8787 node packages/mcp-server/src/index.ts
+ *   PROOFCOURT_MCP_HTTP_PORT=8788 node packages/mcp-server/src/index.ts
  *   # or via the workspace scripts:
  *   npm run mcp:server
  */
 
+import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -26,6 +30,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 const PROOFCOURT_API_URL = (process.env.PROOFCOURT_API_URL ?? 'http://localhost:8787').replace(/\/$/, '');
+const PROOFCOURT_MCP_HTTP_PORT = process.env.PROOFCOURT_MCP_HTTP_PORT
+  ? Number(process.env.PROOFCOURT_MCP_HTTP_PORT)
+  : null;
+const PROOFCOURT_MCP_HTTP_HOST = process.env.PROOFCOURT_MCP_HTTP_HOST ?? '127.0.0.1';
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -214,40 +222,112 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 // MCP server bootstrap
 // ---------------------------------------------------------------------------
 
-const server = new Server(
-  {
-    name: '@proofcourt/mcp-server',
-    version: '0.1.0',
-  },
-  {
-    capabilities: {
-      tools: {},
+function createProofCourtMcpServer() {
+  const server = new Server(
+    {
+      name: '@proofcourt/mcp-server',
+      version: '0.1.0',
     },
-  },
-);
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS,
-}));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: TOOLS,
+  }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args = {} } = request.params;
-  try {
-    const output = await handleTool(name, args as Record<string, unknown>);
-    return {
-      content: [{ type: 'text', text: output }],
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
-      isError: true,
-    };
-  }
-});
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args = {} } = request.params;
+    try {
+      const output = await handleTool(name, args as Record<string, unknown>);
+      return {
+        content: [{ type: 'text', text: output }],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+        isError: true,
+      };
+    }
+  });
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+  return server;
+}
+
+if (PROOFCOURT_MCP_HTTP_PORT) {
+  const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+  const httpServer = http.createServer(async (req, res) => {
+    if (!req.url?.startsWith('/mcp')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found', path: '/mcp' }));
+      return;
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id, Last-Event-ID');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    try {
+      const sessionId = req.headers['mcp-session-id'];
+      const normalizedSessionId = Array.isArray(sessionId) ? sessionId[0] : sessionId;
+      let transport = normalizedSessionId ? sessions.get(normalizedSessionId) : undefined;
+
+      if (!transport && normalizedSessionId) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unknown_mcp_session', sessionId: normalizedSessionId }));
+        return;
+      }
+
+      if (!transport) {
+        const server = createProofCourtMcpServer();
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+        });
+        transport.onclose = () => {
+          if (transport?.sessionId) sessions.delete(transport.sessionId);
+        };
+        transport.onerror = (error) => {
+          process.stderr.write(`[proofcourt-mcp] HTTP transport error: ${error.message}\n`);
+        };
+        await server.connect(transport);
+
+        const originalSend = transport.send.bind(transport);
+        transport.send = async (message, options) => {
+          if (transport?.sessionId) sessions.set(transport.sessionId, transport);
+          return originalSend(message, options);
+        };
+      }
+
+      await transport.handleRequest(req, res);
+      if (transport.sessionId) sessions.set(transport.sessionId, transport);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+      }
+      res.end(JSON.stringify({ error: message }));
+    }
+  });
+
+  httpServer.listen(PROOFCOURT_MCP_HTTP_PORT, PROOFCOURT_MCP_HTTP_HOST, () => {
+    process.stderr.write(`[proofcourt-mcp] HTTP transport ready: http://${PROOFCOURT_MCP_HTTP_HOST}:${PROOFCOURT_MCP_HTTP_PORT}/mcp\n`);
+  });
+} else {
+  const stdioServer = createProofCourtMcpServer();
+  const transport = new StdioServerTransport();
+  await stdioServer.connect(transport);
+}
 
 // Log to stderr (not stdout — stdout is for MCP protocol messages)
 process.stderr.write(`[proofcourt-mcp] ProofCourt MCP server ready. API: ${PROOFCOURT_API_URL}\n`);
