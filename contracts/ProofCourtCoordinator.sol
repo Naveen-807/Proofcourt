@@ -19,6 +19,13 @@ contract ProofCourtCoordinator is ProofCourtAccess {
         address indexed executor,
         bytes32 permitHash
     );
+    event AgentHired(
+        uint256 indexed caseId,
+        address indexed requester,
+        address indexed worker,
+        bytes32 slaHash,
+        bytes32 agentDnsResolutionHash
+    );
     event Committed(
         uint256 indexed caseId,
         uint256 indexed workflowId,
@@ -56,6 +63,8 @@ contract ProofCourtCoordinator is ProofCourtAccess {
         bytes32 actionHash,
         uint256 expiry,
         bytes32 permitHash,
+        bytes32 slaHash,
+        bytes32 agentDnsResolutionHash,
         uint256 minTrustScore
     ) external onlyJudge {
         bool trusted = reputation.meetsThreshold(executor, minTrustScore);
@@ -63,7 +72,9 @@ contract ProofCourtCoordinator is ProofCourtAccess {
 
         escrow.lockPayout(caseId, permitHash);
         workRegistry.registerPermit(workflowId, mandateHash, executor, actionHash, expiry);
+        (address requester,,,,,,,,) = escrow.cases(caseId);
 
+        emit AgentHired(caseId, requester, executor, slaHash, agentDnsResolutionHash);
         emit Prepared(caseId, workflowId, executor, permitHash);
     }
 
