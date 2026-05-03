@@ -1,16 +1,21 @@
 import { Shield, CheckCircle2, History, AlertCircle, XCircle, Search, Cpu, Zap, Database, Lock, Unlock, ArrowRight, ZapOff } from 'lucide-react';
 import {
-  INITIAL_AGENTS,
   STATE_ORDER,
   WORKFLOW_NODE_SPECS,
   type Agent,
+  type AgentDNSRecord,
+  type AgentDNSResolution,
+  type AgentHireReceipt,
   type AgentINFT,
+  type AgentSLA,
   type AppState,
   type AxlMessage,
   type EvidenceBundle,
+  type ExecutionReceipt,
   type KeeperHubReceipt,
   type Mandate,
   type PayoutState,
+  type PermitReceipt,
   type ProofCourtRun,
   type VerifierVerdict,
   type WorkflowResponse,
@@ -18,19 +23,25 @@ import {
 
 export type {
   Agent,
+  AgentDNSRecord,
+  AgentDNSResolution,
+  AgentHireReceipt,
   AgentINFT,
+  AgentSLA,
   AppState,
   AxlMessage,
   EvidenceBundle,
+  ExecutionReceipt,
   KeeperHubReceipt,
   Mandate,
   PayoutState,
+  PermitReceipt,
   ProofCourtRun,
   VerifierVerdict,
   WorkflowResponse,
 };
 
-export { INITIAL_AGENTS, STATE_ORDER };
+export { STATE_ORDER };
 
 const workflowIcons = {
   intent: Search,

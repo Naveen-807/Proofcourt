@@ -33,20 +33,116 @@ export interface AgentINFT {
   holder: string;
   metadataURI: string;
   intelligencePointer: string;
+  memoryRoot?: string;
+  memoryTxHash?: string;
+  explorerUrl?: string;
   royaltyBps: number;
   royaltiesEarned: string;
+}
+
+export interface AgentDNSRecord {
+  agentId: string;
+  tokenId: string;
+  role: AgentRole;
+  holder: string;
+  metadataURI: string;
+  intelligencePointer: string;
+  score: number;
+  status: AgentStatus;
+  casesTotal: number;
+  casesPassed: number;
+  lastEvidenceHash: string;
+  memoryRoot: string;
+  memoryTxHash?: string;
+  memoryUpdatedAt: string;
+  explorerUrl: string;
+  earnings: string;
+}
+
+export interface AgentDNSResolution {
+  id: string;
+  mandateId: string;
+  source: 'onchain-agent-inft-0g';
+  chainId: 16602;
+  agentInftAddress: string;
+  resolvedAt: string;
+  records: AgentDNSRecord[];
+  selectedAgentIds: string[];
+  rejectedAgentIds: string[];
+  resolutionHash: string;
 }
 
 export interface Mandate {
   id: string;
   text: string;
-  intent: 'recurring_vault_deposit' | 'weekly_transfer' | 'protected_buy';
+  intent: 'recurring_vault_deposit' | 'weekly_transfer' | 'protected_buy' | 'proof_only_task';
   amount: string;
   frequency: 'weekly' | 'monthly' | 'event';
   destination: string;
   maxExecutorPayout: string;
   minAgentTrustScore: number;
   requiredProof: Array<'AXL_LOGS' | 'KEEPERHUB_RECEIPT' | '0G_EVIDENCE_ROOT'>;
+}
+
+export interface AgentSLA {
+  id: string;
+  mandateId: string;
+  workerAgentId: string;
+  requesterAgentId: string;
+  verifierAgentIds: string[];
+  task: string;
+  action: string;
+  taskActionType: 'vaultDeposit' | 'protectedBuy' | 'weeklyTransfer' | 'proofOnlyTask';
+  payout: string;
+  deadlineIso: string;
+  acceptanceCriteria: string[];
+  disputeRule: '2_OF_3_VERIFIER_QUORUM';
+  requiredProof: Mandate['requiredProof'];
+  agentDnsResolutionHash: string;
+  mandateHash: string;
+  actionHash: string;
+  agentMemoryRoots: Record<string, string>;
+  slaHash: string;
+  zeroGRoot?: string;
+  zeroGTxHash?: string;
+  storedAt?: string;
+}
+
+export interface AgentHireReceipt {
+  id: string;
+  caseId: string;
+  eventName: 'AgentHired';
+  requesterAgentId: string;
+  workerAgentId: string;
+  requesterAddress: string;
+  workerAddress: string;
+  slaHash: string;
+  agentDnsResolutionHash: string;
+  zeroGSlaRoot: string;
+  hiredAt: string;
+  prepareTxHash?: string;
+}
+
+export interface PermitReceipt {
+  id: string;
+  caseId: string;
+  mandateHash: string;
+  slaHash: string;
+  zeroGSlaRoot: string;
+  agentDnsResolutionHash: string;
+  permitHash: string;
+  axlTranscriptHash?: string;
+  committedAt: string;
+  phase: 'MandatePermit';
+}
+
+export interface ExecutionReceipt {
+  phase: 'ProofCourtSettlement';
+  actionType: AgentSLA['taskActionType'];
+  keeperHubExecutionId: string;
+  keeperHubReceiptHash: string;
+  txHash: string;
+  recordedAt: string;
 }
 
 export interface WorkflowNodeSpec {
@@ -67,7 +163,7 @@ export interface AxlMessage {
   type: string;
   payloadHash?: string;
   hash: string;
-  mode?: 'live' | 'mock';
+  mode?: 'live';
 }
 
 export interface KeeperHubLogEntry {
@@ -91,6 +187,8 @@ export interface KeeperHubReceipt {
   logs?: KeeperHubLogEntry[];
   gasOptimized: boolean;
   retryCount: number;
+  runtimeBuilt?: boolean;
+  webhookKey?: string;
 }
 
 export interface EvidenceBundle {
@@ -131,10 +229,18 @@ export interface VerificationCriterion {
 
 export interface VerifierVerdict {
   verifierId: 'verifier-1' | 'verifier-2' | 'verifier-3';
-  /** OFFLINE = verifier timed out (resilience demo: 2/3 live still quorums if PASS majority) */
+  /** OFFLINE = verifier timed out; quorum requires recorded verifier outcomes. */
   decision: 'PASS' | 'FAIL' | 'OFFLINE';
   reasoningHash: string;
   attestationHash?: string;
+  promptHash?: string;
+  responseHash?: string;
+  model?: string;
+  source?: string;
+  signatureValid?: boolean;
+  computeVerdictHash?: string;
+  computePromptHash?: string;
+  computeResponseHash?: string;
   verdictHash: string;
   signature: string;
   timestamp: string;
@@ -161,12 +267,15 @@ export interface VerificationReceipt {
 }
 
 export interface SettlementReceipt {
-  mode: 'live' | 'mock';
+  mode: 'live';
   caseId?: string;
   workflowId: string;
   executorAddress: string;
-  escrowStatus: 'Locked' | 'Released' | 'Blocked' | 'Refunded';
+  payerAddress?: string;
+  fundedAmount?: string;
+  escrowStatus: 'Pending' | 'Locked' | 'Released' | 'Blocked' | 'Refunded';
   contractCaseId?: string;
+  fundingTxHash?: string;
   prepareTxHash?: string;
   commitTxHash?: string;
   abortTxHash?: string;
@@ -178,6 +287,19 @@ export interface ProofCourtRun {
   state: AppState;
   progress: number;
   mandate: Mandate;
+  agentDnsResolution?: AgentDNSResolution;
+  agentSla?: AgentSLA;
+  agentHire?: AgentHireReceipt;
+  permitReceipt?: PermitReceipt;
+  executionReceipt?: ExecutionReceipt;
+  swarmMemory?: {
+    caseId: string;
+    memoryRoot: string;
+    memoryTxHash?: string;
+    storedAt: string;
+    sharedStateHash: string;
+    agentMemoryRoots: Record<string, string>;
+  };
   agents: Agent[];
   selectedAgentIds: string[];
   rejectedAgentIds: string[];
@@ -191,6 +313,16 @@ export interface ProofCourtRun {
   isTampered: boolean;
   verificationReceipt?: VerificationReceipt;
   settlementReceipt?: SettlementReceipt;
+  runtimeKeeperHubWorkflow?: {
+    workflowId: string;
+    webhookKey?: string;
+    name: string;
+    phase: 'atomic-settlement';
+  };
+  reputationTxHash?: string;
+  reputationUpdateMode?: 'live' | 'not-configured' | 'error';
+  reputationError?: string;
+  zeroGKvTxHash?: string;
   replayedFromZeroG?: boolean;
   verdicts?: VerifierVerdict[];
   quorum?: { passed: number; failed: number; reached: boolean };
@@ -230,104 +362,14 @@ export const STATE_ORDER: AppState[] = [
   'payout_blocked',
 ];
 
-export const INITIAL_AGENTS: Agent[] = [
-  {
-    id: 'requester',
-    name: 'Requester Agent',
-    role: 'Requester',
-    score: 96,
-    status: 'Trusted',
-    executions: 47,
-    blocks: 0,
-    inft: {
-      tokenId: '1',
-      holder: 'requester-agent',
-      metadataURI: '0g://proofcourt/agents/requester.json',
-      intelligencePointer: '0g-agent-playbook-requester',
-      royaltyBps: 250,
-      royaltiesEarned: '0.000 ETH',
-    },
-  },
-  {
-    id: 'worker',
-    name: 'Worker Agent',
-    role: 'Worker',
-    score: 89,
-    status: 'Trusted',
-    executions: 31,
-    blocks: 1,
-    inft: {
-      tokenId: '2',
-      holder: 'worker-agent',
-      metadataURI: '0g://proofcourt/agents/worker.json',
-      intelligencePointer: '0g-agent-playbook-worker',
-      royaltyBps: 300,
-      royaltiesEarned: '0.000 ETH',
-    },
-  },
-  {
-    id: 'verifier-1',
-    name: 'Verifier-1',
-    role: 'Verifier',
-    score: 100,
-    status: 'System',
-    executions: 78,
-    blocks: 0,
-    inft: {
-      tokenId: '3',
-      holder: 'verifier-1-agent',
-      metadataURI: '0g://proofcourt/agents/verifier-1.json',
-      intelligencePointer: '0g-agent-playbook-verifier',
-      royaltyBps: 200,
-      royaltiesEarned: '0.000 ETH',
-    },
-  },
-  {
-    id: 'verifier-2',
-    name: 'Verifier-2',
-    role: 'Verifier',
-    score: 100,
-    status: 'System',
-    executions: 65,
-    blocks: 0,
-    inft: {
-      tokenId: '4',
-      holder: 'verifier-2-agent',
-      metadataURI: '0g://proofcourt/agents/verifier-2.json',
-      intelligencePointer: '0g-agent-playbook-verifier',
-      royaltyBps: 200,
-      royaltiesEarned: '0.000 ETH',
-    },
-  },
-  {
-    id: 'verifier-3',
-    name: 'Verifier-3',
-    role: 'Verifier',
-    score: 100,
-    status: 'System',
-    executions: 52,
-    blocks: 0,
-    inft: {
-      tokenId: '5',
-      holder: 'verifier-3-agent',
-      metadataURI: '0g://proofcourt/agents/verifier-3.json',
-      intelligencePointer: '0g-agent-playbook-verifier',
-      royaltyBps: 200,
-      royaltiesEarned: '0.000 ETH',
-    },
-  },
-  { id: 'worker-beta', name: 'Worker Agent Beta', role: 'Worker', score: 62, status: 'Caution', executions: 8, blocks: 3 },
-  { id: 'rogue', name: 'Rogue Worker', role: 'Worker', score: 23, status: 'Suspended', executions: 5, blocks: 4 },
-];
-
 export const WORKFLOW_NODE_SPECS: WorkflowNodeSpec[] = [
-  { id: 'intent', label: 'User Intent', desc: 'Natural language mandate' },
-  { id: 'trigger', label: 'Schedule Trigger', desc: 'Time-based activation' },
-  { id: 'requester', label: 'Requester Agent', desc: 'Case filing and permit', sponsor: 'AXL' },
-  { id: 'worker', label: 'Worker Agent', desc: 'Trusted task executor' },
-  { id: 'keeper', label: 'KeeperHub Execution', desc: 'Approved execution rail', sponsor: 'KeeperHub' },
-  { id: 'jury', label: '3-Verifier Jury', desc: 'AXL quorum verdict', sponsor: 'AXL' },
-  { id: 'evidence', label: '0G Evidence', desc: 'Case File proof memory', sponsor: '0G' },
+  { id: 'intent', label: 'Mandate', desc: 'User request and constraints' },
+  { id: 'agent_dns', label: 'AgentDNS', desc: 'Onchain agent identity lookup', sponsor: '0G' },
+  { id: 'agent_sla', label: 'AgentSLA', desc: '0G-stored work agreement', sponsor: '0G' },
+  { id: 'requester', label: 'Phase 1 Permit', desc: 'Mandate approval commit', sponsor: 'AXL' },
+  { id: 'keeper', label: 'KeeperHub Execution', desc: 'Permitted work only', sponsor: 'KeeperHub' },
+  { id: 'jury', label: 'Phase 2 ProofCourt', desc: 'Verifier settlement commit', sponsor: 'AXL' },
+  { id: 'evidence', label: '0G Evidence Capsule', desc: 'Replayable case file', sponsor: '0G' },
   { id: 'payout', label: 'Verified Payout', desc: 'Proof-gated settlement' },
 ];
 
@@ -335,63 +377,58 @@ export function parseMandate(text: string): Mandate {
   const normalized = text.toLowerCase();
   const isWeekly = normalized.includes('weekly') || normalized.includes('week');
   const isBuy = normalized.includes('buy') || normalized.includes('eth rises') || normalized.includes('protected');
+  const isProofOnly = normalized.includes('audit') || normalized.includes('research') || normalized.includes('report') || normalized.includes('proof only');
   const amountMatch = text.match(/(\d+(?:\.\d+)?)\s*eth/i);
-  const amount = amountMatch ? `${amountMatch[1]} ETH` : isBuy ? '0.01 ETH' : '1 ETH';
+  const amount = amountMatch ? `${amountMatch[1]} ETH` : 'Requires explicit ETH amount';
 
   return {
     id: `mandate_${Date.now()}`,
     text,
-    intent: isBuy ? 'protected_buy' : isWeekly ? 'weekly_transfer' : 'recurring_vault_deposit',
+    intent: isProofOnly ? 'proof_only_task' : isBuy ? 'protected_buy' : isWeekly ? 'weekly_transfer' : 'recurring_vault_deposit',
     amount,
     frequency: isBuy ? 'event' : isWeekly ? 'weekly' : 'monthly',
-    destination: normalized.includes('vault') ? 'vault' : 'approved recipient',
-    maxExecutorPayout: '0.01 ETH',
+    destination: normalized.includes('vault') ? 'vault' : 'Requires approved destination',
+    maxExecutorPayout: amountMatch ? `${amountMatch[1]} ETH` : 'Requires explicit ETH payout',
     minAgentTrustScore: 80,
     requiredProof: ['AXL_LOGS', 'KEEPERHUB_RECEIPT', '0G_EVIDENCE_ROOT'],
   };
 }
 
-export function selectTrustedAgents(agents: Agent[], threshold: number) {
-  const selectedAgentIds = agents
-    .filter((agent) => agent.status === 'System' || agent.score >= threshold)
-    .map((agent) => agent.id);
-
-  const rejectedAgentIds = agents
-    .filter((agent) => agent.status !== 'System' && agent.score < threshold)
-    .map((agent) => agent.id);
-
-  return { selectedAgentIds, rejectedAgentIds };
-}
-
 export function createWorkflow(text: string): WorkflowResponse {
   const mandate = parseMandate(text);
-  const { selectedAgentIds, rejectedAgentIds } = selectTrustedAgents(INITIAL_AGENTS, mandate.minAgentTrustScore);
 
   return {
     mandate,
     workflowNodes: WORKFLOW_NODE_SPECS,
-    agents: INITIAL_AGENTS,
-    selectedAgentIds,
-    rejectedAgentIds,
+    agents: [],
+    selectedAgentIds: [],
+    rejectedAgentIds: [],
   };
 }
 
-export function createRun(workflow: WorkflowResponse): ProofCourtRun {
+export function createRun(
+  workflow: WorkflowResponse,
+  agentDnsResolution?: AgentDNSResolution,
+  agentSla?: AgentSLA,
+): ProofCourtRun {
+  const agents = workflow.agents.length > 0 ? workflow.agents : agentsFromDns(agentDnsResolution);
   return {
     id: `run_${Date.now()}`,
     createdAt: new Date().toISOString(),
     state: 'agents_selected',
     progress: 0,
     mandate: workflow.mandate,
-    agents: workflow.agents,
-    selectedAgentIds: workflow.selectedAgentIds,
-    rejectedAgentIds: workflow.rejectedAgentIds,
+    agentDnsResolution,
+    agentSla,
+    agents,
+    selectedAgentIds: agentDnsResolution?.selectedAgentIds ?? workflow.selectedAgentIds,
+    rejectedAgentIds: agentDnsResolution?.rejectedAgentIds ?? workflow.rejectedAgentIds,
     axlMessages: [],
     keeperHubReceipt: {
       workflowId: 'kh_pending',
       phase: 'execute-mandate',
       status: 'Pending',
-      action: workflow.mandate.intent === 'protected_buy' ? 'protectedBuy()' : 'vaultDeposit(1 ETH)',
+      action: agentSla?.action ?? 'requires-agent-sla',
       txHash: '',
       gasOptimized: false,
       retryCount: 0,
@@ -406,7 +443,7 @@ export function createRun(workflow: WorkflowResponse): ProofCourtRun {
       tampered: false,
     },
     payout: {
-      escrowFunded: '1.01 ETH',
+      escrowFunded: '0 ETH',
       transferAmount: workflow.mandate.amount,
       executorPayout: workflow.mandate.maxExecutorPayout,
       status: 'Inactive',
@@ -414,7 +451,11 @@ export function createRun(workflow: WorkflowResponse): ProofCourtRun {
     trustScore: 0,
     isTampered: false,
     replayedFromZeroG: false,
-    events: ['Agents selected by trust threshold'],
+    events: [
+      'Mandate created',
+      ...(agentDnsResolution ? [`AgentDNS resolved from Agent iNFT contract: ${agentDnsResolution.resolutionHash}`] : []),
+      ...(agentSla?.zeroGRoot ? [`AgentSLA stored on 0G before permit: ${agentSla.zeroGRoot}`] : []),
+    ],
   };
 }
 
@@ -432,16 +473,6 @@ export function advanceRun(run: ProofCourtRun): ProofCourtRun {
         ...run,
         state: 'permit_issued',
         progress: 45,
-        axlMessages: [
-          ...run.axlMessages,
-          createAxlMessage('Strategy Agent Alpha', 'Proof Judge Core', 'WORKFLOW_REQUESTED', 839),
-          createAxlMessage('Proof Judge Core', 'Executor Agent Prime', 'PERMIT_APPROVED', 840),
-        ],
-        evidence: {
-          ...run.evidence,
-          permitHash: '0xpermit91f7a',
-          axlTranscriptHash: '0xaxl3d8c2',
-        },
         events: [...run.events, 'Permit issued over AXL'],
       };
     case 'permit_issued':
@@ -457,10 +488,6 @@ export function advanceRun(run: ProofCourtRun): ProofCourtRun {
         ...run,
         state: 'commit_running',
         progress: 60,
-        axlMessages: [
-          ...run.axlMessages,
-          createAxlMessage('Executor Agent Prime', 'Proof Judge Core', 'READY_TO_COMMIT', 841),
-        ],
         events: [...run.events, 'Commit phase started'],
       };
     case 'commit_running':
@@ -468,19 +495,6 @@ export function advanceRun(run: ProofCourtRun): ProofCourtRun {
         ...run,
         state: 'execution_complete',
         progress: 75,
-        keeperHubReceipt: {
-          workflowId: 'kh_12345',
-          phase: 'execute-mandate',
-          status: 'Completed',
-          action: run.keeperHubReceipt.action,
-          txHash: '0xabc...789',
-          gasOptimized: true,
-          retryCount: 0,
-        },
-        axlMessages: [
-          ...run.axlMessages,
-          createAxlMessage('Executor Agent Prime', 'Proof Judge Core', 'EXECUTION_RECEIPT_SUBMITTED', 842),
-        ],
         events: [...run.events, 'Executor ran through KeeperHub'],
       };
     case 'execution_complete':
@@ -490,8 +504,6 @@ export function advanceRun(run: ProofCourtRun): ProofCourtRun {
         progress: 90,
         evidence: {
           ...run.evidence,
-          root: '0g-root-abc123',
-          keeperHubReceiptHash: '0xkeeper7f91',
           verificationResult: 'PASS',
         },
         events: [...run.events, 'Evidence bundle stored on 0G'],
@@ -506,10 +518,6 @@ export function advanceRun(run: ProofCourtRun): ProofCourtRun {
         state: 'proof_verified',
         progress: 95,
         payout: { ...run.payout, status: 'Verified' },
-        axlMessages: [
-          ...run.axlMessages,
-          createAxlMessage('Proof Judge Core', 'Strategy Agent Alpha', 'PROOF_VERIFIED', 843),
-        ],
         events: [...run.events, 'Proof Judge verified evidence bundle'],
       };
     case 'proof_verified':
@@ -524,11 +532,41 @@ export function advanceRun(run: ProofCourtRun): ProofCourtRun {
       return {
         ...run,
         state: 'reputation_updated',
-        events: [...run.events, 'Executor reputation recalculated from verification receipts'],
+        events: [...run.events, 'Worker Agent reputation recalculated from verification receipts'],
       };
     default:
       return run;
   }
+}
+
+function agentsFromDns(agentDnsResolution?: AgentDNSResolution): Agent[] {
+  if (!agentDnsResolution) return [];
+
+  return agentDnsResolution.records.map((record) => ({
+    id: record.agentId,
+    name: labelForAgent(record.agentId, record.role),
+    role: record.role,
+    score: record.score,
+    status: record.status,
+    executions: record.casesTotal,
+    blocks: Math.max(0, record.casesTotal - record.casesPassed),
+    inft: {
+      tokenId: record.tokenId,
+      holder: record.holder,
+      metadataURI: record.metadataURI,
+      intelligencePointer: record.intelligencePointer,
+      memoryRoot: record.memoryRoot,
+      memoryTxHash: record.memoryTxHash,
+      explorerUrl: record.explorerUrl,
+      royaltyBps: 0,
+      royaltiesEarned: record.earnings,
+    },
+  }));
+}
+
+function labelForAgent(agentId: string, role: AgentRole): string {
+  if (role === 'Verifier') return agentId.replace(/^./, (char) => char.toUpperCase());
+  return `${role} Agent`;
 }
 
 export function markTampered(run: ProofCourtRun): ProofCourtRun {
@@ -539,11 +577,10 @@ export function markTampered(run: ProofCourtRun): ProofCourtRun {
     isTampered: true,
     keeperHubReceipt: {
       ...run.keeperHubReceipt,
-      txHash: '0xDEAD...BEEF',
+      txHash: '',
     },
     evidence: {
       ...run.evidence,
-      root: '0g-root-TAMPERED-xyz',
       verificationResult: 'FAIL',
       tampered: true,
     },
@@ -558,35 +595,19 @@ export function restoreRun(run: ProofCourtRun): ProofCourtRun {
     state: 'proof_verified',
     progress: 95,
     isTampered: false,
-    agents: updateAgentScore(run.agents, 'prime', 90, 32, 1),
-    keeperHubReceipt: {
-      ...run.keeperHubReceipt,
-      txHash: '0xabc...789',
-      status: 'Completed',
-    },
+    agents: updateAgentScore(run.agents, 'worker', 90, 32, 1),
     evidence: {
-      root: '0g-root-abc123',
+      root: run.evidence.root,
       storageMode: '0G Storage',
-      permitHash: run.evidence.permitHash || '0xpermit91f7a',
-      axlTranscriptHash: run.evidence.axlTranscriptHash || '0xaxl3d8c2',
-      keeperHubReceiptHash: '0xkeeper7f91',
+      permitHash: run.evidence.permitHash,
+      axlTranscriptHash: run.evidence.axlTranscriptHash,
+      keeperHubReceiptHash: run.evidence.keeperHubReceiptHash,
       verificationResult: 'PASS',
       tampered: false,
     },
     payout: { ...run.payout, status: 'Verified' },
     trustScore: 97,
     events: [...run.events, 'Evidence restored from 0G root and verified'],
-  };
-}
-
-function createAxlMessage(from: string, to: string, type: string, sequence: number): AxlMessage {
-  return {
-    id: `axl_${sequence}`,
-    timestamp: new Date(Date.now() + sequence).toISOString(),
-    from,
-    to,
-    type,
-    hash: `0x${sequence.toString(16)}${type.toLowerCase().replaceAll('_', '').slice(0, 8)}`,
   };
 }
 
