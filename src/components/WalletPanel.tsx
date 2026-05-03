@@ -1,84 +1,116 @@
-import React from 'react';
-import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { Wallet, ShieldCheck, Unplug, ChevronDown } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, Loader2, ShieldCheck, Unplug, Wallet } from 'lucide-react';
+import { useChainId, useConnect, useConnection, useDisconnect, useSwitchChain } from 'wagmi';
+import { hardhat } from 'viem/chains';
+import { zeroGGalileo } from '../web3/config';
 import { cn } from '../lib/utils';
 
+const supportedChains = [zeroGGalileo, hardhat];
+
 export default function WalletPanel() {
-  return (
-    <ConnectButton.Custom>
-      {({
-        account,
-        chain,
-        mounted,
-        openAccountModal,
-        openChainModal,
-        openConnectModal,
-      }) => {
-        const connected = mounted && account && chain;
-        const unsupported = connected && chain.unsupported;
+  const connection = useConnection();
+  const chainId = useChainId();
+  const { connectors, connect, isPending, error } = useConnect();
+  const { disconnect } = useDisconnect();
+  const { switchChain, isPending: isSwitching } = useSwitchChain();
+  const [hasBrowserWallet, setHasBrowserWallet] = useState(false);
 
-        if (!connected) {
-          return (
-            <button
-              type="button"
-              onClick={openConnectModal}
-              className="group flex h-11 items-center gap-3 rounded-sm border border-primary/40 bg-primary px-4 text-xs font-bold uppercase tracking-widest text-white shadow-[0_0_24px_rgba(255,11,11,0.18)] transition-all hover:bg-primary/90 hover:shadow-[0_0_34px_rgba(255,11,11,0.28)]"
-            >
-              <Wallet className="h-4 w-4" />
-              Connect Wallet
-            </button>
-          );
-        }
+  useEffect(() => {
+    setHasBrowserWallet(
+      typeof window !== 'undefined' &&
+        Boolean((window as Window & { ethereum?: unknown }).ethereum),
+    );
+  }, []);
 
-        if (unsupported) {
-          return (
-            <button
-              type="button"
-              onClick={openChainModal}
-              className="flex h-11 items-center gap-3 rounded-sm border border-red-500/40 bg-red-500/10 px-4 text-xs font-bold uppercase tracking-widest text-red-300 transition-all hover:bg-red-500/20"
-            >
-              <Unplug className="h-4 w-4" />
-              Wrong Network
-            </button>
-          );
-        }
+  const connector = useMemo(() => {
+    return (
+      connectors.find((item) => item.id === 'injected') ??
+      connectors.find((item) => item.id === 'metaMask') ??
+      connectors[0]
+    );
+  }, [connectors]);
 
-        return (
-          <div className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/[0.03] p-1">
-            <button
-              type="button"
-              onClick={openChainModal}
-              className="hidden h-9 items-center gap-2 rounded-sm border border-white/10 bg-black/30 px-3 text-[10px] font-bold uppercase tracking-widest text-white/65 transition-colors hover:text-white sm:flex"
-            >
-              {chain.hasIcon && chain.iconUrl ? (
-                <img src={chain.iconUrl} alt={chain.name} className="h-4 w-4 rounded-full" />
-              ) : (
-                <span className="h-2 w-2 rounded-full bg-green-500" />
-              )}
-              {chain.name}
-              <ChevronDown className="h-3 w-3 text-white/30" />
-            </button>
+  const currentChain = supportedChains.find((chain) => chain.id === chainId);
+  const connected = connection.isConnected && connection.address;
+  const unsupported = connected && !currentChain;
+  const displayAddress = connection.address
+    ? `${connection.address.slice(0, 6)}...${connection.address.slice(-4)}`
+    : '';
 
-            <button
-              type="button"
-              onClick={openAccountModal}
-              className="flex h-9 items-center gap-3 rounded-sm bg-primary/10 px-3 text-left transition-colors hover:bg-primary/15"
-            >
-              <div className="flex h-6 w-6 items-center justify-center rounded-sm bg-primary/20 text-primary">
-                <ShieldCheck className="h-4 w-4" />
-              </div>
-              <div className="leading-none">
-                <div className="text-[10px] font-bold uppercase tracking-widest text-white">
-                  {account.displayName}
-                </div>
-                <div className={cn('mt-1 text-[9px] font-mono uppercase tracking-widest text-green-400')}>
-                  Permit signer ready
-                </div>
-              </div>
-            </button>
+  if (!connected) {
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => connector && connect({ connector })}
+          disabled={!connector || isPending}
+          className="court-button court-button-primary h-11"
+          title={!hasBrowserWallet ? 'Install or unlock MetaMask or another injected browser wallet.' : undefined}
+        >
+          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+          {isPending ? 'Connecting...' : hasBrowserWallet ? 'Connect Wallet' : 'Connect Browser Wallet'}
+        </button>
+        {error && (
+          <div className="absolute right-0 top-14 z-50 w-[280px] rounded-[10px] border border-[#EF4D5B]/35 bg-[#1A0C10] p-3 text-xs leading-5 text-red-100 shadow-2xl">
+            {error.message}
           </div>
-        );
-      }}
-    </ConnectButton.Custom>
+        )}
+      </div>
+    );
+  }
+
+  if (unsupported) {
+    return (
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => switchChain({ chainId: zeroGGalileo.id })}
+          disabled={isSwitching}
+          className="court-button court-button-danger h-11"
+        >
+          {isSwitching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unplug className="h-4 w-4" />}
+          Switch to 0G Galileo
+        </button>
+        <button
+          type="button"
+          onClick={() => disconnect()}
+          className="court-button court-button-secondary h-11 px-3"
+        >
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 rounded-[10px] border border-white/10 bg-white/[0.035] p-1">
+      <button
+        type="button"
+        onClick={() => switchChain({ chainId: currentChain?.id === hardhat.id ? zeroGGalileo.id : hardhat.id })}
+        className="flex h-9 items-center gap-2 rounded-[8px] border border-white/10 bg-black/25 px-3 text-[10px] font-bold uppercase tracking-[0.14em] text-white/65 transition-colors hover:text-white"
+      >
+        <span className="h-2 w-2 rounded-full bg-[#3DDC97]" />
+        {currentChain?.name ?? 'Connected'}
+        <ChevronDown className="h-3 w-3 text-white/30" />
+      </button>
+
+      <button
+        type="button"
+        onClick={() => disconnect()}
+        className="flex h-9 items-center gap-3 rounded-[8px] bg-primary/10 px-3 text-left transition-colors hover:bg-primary/15"
+      >
+        <div className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-primary/20 text-primary">
+          <ShieldCheck className="h-4 w-4" />
+        </div>
+        <div className="leading-none">
+          <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-white">
+            {displayAddress}
+          </div>
+          <div className={cn('mt-1 text-[9px] font-mono uppercase tracking-widest text-[#3DDC97]')}>
+            Permit signer ready
+          </div>
+        </div>
+      </button>
+    </div>
   );
 }

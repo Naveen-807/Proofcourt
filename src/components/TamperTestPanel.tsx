@@ -1,6 +1,6 @@
 import React from 'react';
 import { AppState } from '../types';
-import { ShieldAlert, RefreshCw, ZapOff, ShieldCheck } from 'lucide-react';
+import { RotateCcw, ShieldAlert, ShieldCheck, ZapOff } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface Props {
@@ -16,72 +16,60 @@ export default function TamperTestPanel({ state, onTamper, onRestore, onReplay, 
   const isEnabled = ['execution_complete', 'evidence_stored', 'proof_verified', 'payout_released', 'reputation_updated', 'tamper_detected', 'payout_blocked'].includes(state);
 
   return (
-    <div className="glass-panel p-6 border-white/5">
-      <h3 className="text-sm font-medium uppercase tracking-widest text-white/80 mb-6 flex items-center gap-2">
-        <ShieldAlert className="w-4 h-4 text-primary" />
-        Red Team Controls
-      </h3>
-
-      <div className="space-y-4">
-        <p className="text-[11px] text-white/40 leading-relaxed mb-4">
-          Test the protocol's resilience by simulating malicious data injection or evidence tampering.
-        </p>
-
-        <button
-          onClick={onTamper}
-          disabled={!isEnabled || isTampered}
-          className={cn(
-            "w-full py-3 bg-red-500/10 border border-red-500/40 text-red-500 rounded-sm font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-500/20 transition-all disabled:opacity-30 disabled:pointer-events-none",
-            isTampered && "border-red-500 bg-red-500 text-white"
-          )}
-        >
-          <ZapOff className="w-3 h-3" />
-          RUN TAMPER TEST
-        </button>
-
-        <button
-          onClick={onRestore}
-          disabled={!isTampered}
-          className="w-full py-3 bg-white/5 border border-white/10 text-white/80 rounded-sm font-bold text-xs flex items-center justify-center gap-2 hover:bg-white/10 transition-all disabled:opacity-30 disabled:pointer-events-none"
-        >
-          <RefreshCw className={cn("w-3 h-3", isTampered && "animate-spin")} />
-          RESTORE VALID EVIDENCE
-        </button>
-
-        <button
-          onClick={onReplay}
-          disabled={!isEnabled}
-          className="w-full py-3 bg-primary/10 border border-primary/30 text-primary rounded-sm font-bold text-xs flex items-center justify-center gap-2 hover:bg-primary/20 transition-all disabled:opacity-30 disabled:pointer-events-none"
-        >
-          <ShieldCheck className="w-3 h-3" />
-          REPLAY SCORE FROM 0G
-        </button>
-
-        {replayedFromZeroG && (
-          <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-sm">
-            <div className="flex items-center gap-2 mb-1">
-              <ShieldCheck className="w-4 h-4 text-green-400" />
-              <span className="text-[10px] font-bold text-green-400 uppercase tracking-widest">0G Replay Verified</span>
-            </div>
-            <p className="text-[10px] text-white/70 leading-tight">
-              Local state was reconstructed from stored case evidence. Trust score is tied to receipt history, not UI state.
-            </p>
-          </div>
-        )}
-
-        {isTampered && (
-          <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-sm">
-            <div className="flex items-center gap-2 mb-1">
-              <ShieldAlert className="w-4 h-4 text-red-500" />
-              <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Tamper Detected</span>
-            </div>
-            <p className="text-[10px] text-white/80 leading-tight">
-              Evidence root mismatch detected. Verifier Jury has locked the 
-              settlement layer. Payout blocked. Reputation penalty applied.
-            </p>
-          </div>
-        )}
+    <section className="court-panel p-5">
+      <div className="mb-5 flex items-start justify-between">
+        <div>
+          <p className="court-eyebrow">Proof challenge</p>
+          <h3 className="mt-1 text-xl font-bold tracking-tight">Tamper test</h3>
+        </div>
+        <div className={cn('status-badge', isTampered ? 'badge-blocked' : 'badge-pending')}>
+          <span className="status-dot" />
+          {isTampered ? 'Mismatch found' : 'Ready'}
+        </div>
       </div>
-    </div>
+
+      <p className="mb-5 text-sm leading-6 text-white/52">
+        Demonstrate that ProofCourt blocks settlement when the evidence root no longer matches the approved work.
+      </p>
+
+      <div className="grid grid-cols-1 gap-3">
+        <button onClick={onTamper} disabled={!isEnabled || isTampered} className="court-button court-button-danger">
+          <ZapOff className="h-4 w-4" />
+          Run Tamper Test
+        </button>
+        <button onClick={onRestore} disabled={!isTampered} className="court-button court-button-secondary">
+          <RotateCcw className={cn('h-4 w-4', isTampered && 'animate-spin')} />
+          Restore Valid Evidence
+        </button>
+        <button onClick={onReplay} disabled={!isEnabled} className="court-button court-button-secondary">
+          <ShieldCheck className="h-4 w-4 text-[#9C7BFF]" />
+          Replay Score From 0G
+        </button>
+      </div>
+
+      {replayedFromZeroG && (
+        <div className="mt-4 rounded-[10px] border border-[#3DDC97]/28 bg-[#3DDC97]/8 p-3">
+          <div className="mb-1 flex items-center gap-2 text-xs font-bold text-[#3DDC97]">
+            <ShieldCheck className="h-4 w-4" />
+            0G replay verified
+          </div>
+          <p className="text-xs leading-5 text-white/62">
+            Local state was reconstructed from stored case evidence.
+          </p>
+        </div>
+      )}
+
+      {isTampered && (
+        <div className="mt-4 rounded-[10px] border border-[#EF4D5B]/35 bg-[#EF4D5B]/10 p-3">
+          <div className="mb-1 flex items-center gap-2 text-xs font-bold text-[#FF8A96]">
+            <ShieldAlert className="h-4 w-4" />
+            Execution blocked
+          </div>
+          <p className="text-xs leading-5 text-white/70">
+            Evidence root mismatch detected. Payout remains locked and reputation is penalized.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
