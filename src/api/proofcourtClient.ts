@@ -30,12 +30,33 @@ export interface IntegrationStatus {
   zeroGCompute: IntegrationHealth;
   contracts: {
     deployed: boolean;
+    chainId: 16602;
+    explorer: string;
     contracts: Array<{
       name: string;
       address: string | null;
       purpose: string;
     }>;
   };
+}
+
+export interface EscrowFundingIntent {
+  chainId: 16602;
+  escrowAddress: `0x${string}`;
+  executorAddress: `0x${string}`;
+  mandateHash: `0x${string}`;
+  payoutWei: string;
+  payoutLabel: string;
+  workflowId: string;
+}
+
+export interface EscrowFundingReceipt {
+  txHash: `0x${string}`;
+  contractCaseId: string;
+  payerAddress: `0x${string}`;
+  executorAddress: `0x${string}`;
+  fundedAmount: string;
+  workflowId: string;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -69,6 +90,17 @@ export async function createRun(mandateId: string): Promise<ProofCourtRun> {
   return request<ProofCourtRun>('/api/runs', {
     method: 'POST',
     body: JSON.stringify({ mandateId }),
+  });
+}
+
+export async function getEscrowFundingIntent(runId: string): Promise<EscrowFundingIntent> {
+  return request<EscrowFundingIntent>(`/api/runs/${runId}/escrow-intent`);
+}
+
+export async function attachEscrowFunding(runId: string, receipt: EscrowFundingReceipt): Promise<ProofCourtRun> {
+  return request<ProofCourtRun>(`/api/runs/${runId}/escrow`, {
+    method: 'POST',
+    body: JSON.stringify(receipt),
   });
 }
 
