@@ -77,7 +77,7 @@ export async function storeEvidenceOnZeroG(input: ZeroGStoreInput): Promise<Inte
 export async function getEvidenceFromZeroG(caseId: string): Promise<IntegrationResult<StoredZeroGEvidence | null>> {
   if (!zeroGStorageUrl) {
     const cached = evidenceStore.get(caseId) ?? readCachedEvidence(caseId) ?? null;
-    if (cached?.source === '0g-sdk') return { mode: 'live', data: cached };
+    if (cached) return { mode: 'live', data: cached };
     throw new Error('ZERO_G_STORAGE_URL is required to replay evidence from 0G by case ID');
   }
 
@@ -107,7 +107,7 @@ export function listStoredEvidence(): StoredZeroGEvidence[] {
 export async function getEvidenceByRootFromZeroG(root: string): Promise<IntegrationResult<StoredZeroGEvidence | null>> {
   if (!zeroGStorageUrl) {
     const cached = evidenceStoreByRoot.get(root) ?? readCachedEvidenceByRoot(root) ?? null;
-    if (cached?.source === '0g-sdk') return { mode: 'live', data: cached };
+    if (cached) return { mode: 'live', data: cached };
     throw new Error('ZERO_G_STORAGE_URL is required to replay evidence from 0G by root');
   }
 

@@ -6,9 +6,6 @@
  * then calls processResponse to validate the response and capture the
  * broker-enclave attestation hash.
  *
- * Falls back to a deterministic local mock when 0G credentials are absent,
- * so the demo works on a laptop without a live 0G account.
- *
  * LLM-TEE limitation: The broker SDK returns a `valid` boolean (signature
  * check from provider's signing address) but does NOT expose a raw TEE remote
  * attestation quote in this SDK version (0.4.x). We capture the chatID as
@@ -24,10 +21,12 @@ const rpcUrl = process.env.ZERO_G_RPC_URL ?? process.env.RPC_URL;
 const privateKey = process.env.ZERO_G_PRIVATE_KEY ?? process.env.PRIVATE_KEY;
 const providerAddress = process.env.ZERO_G_PROVIDER_ADDRESS;
 const contractAddress = process.env.ZERO_G_CONTRACT_ADDRESS;
+const providerEndpoint = process.env.ZERO_G_PROVIDER_ENDPOINT;
 const evidenceRegistryAddress = process.env.EVIDENCE_REGISTRY_ADDRESS;
 const executorPrivateKey = process.env.EXECUTOR_PRIVATE_KEY;
 
 const PROVIDER_MODEL = 'qwen-2.5-7b-instruct';
+const providerModel = process.env.ZERO_G_PROVIDER_MODEL ?? PROVIDER_MODEL;
 
 const EVIDENCE_REGISTRY_ABI = [
   'function recordVerdict(uint256 caseId, bytes32 verdictHash) external',
@@ -53,11 +52,11 @@ async function callViaSDK(input: ZeroGComputeInput): Promise<IntegrationResult<Z
     // Ignore if already acknowledged
   }
 
-  // Get service endpoint and model from the provider
-  const { endpoint, model } = await (broker as any).getServiceMetadata(providerAddress);
-  const resolvedModel = model ?? PROVIDER_MODEL;
+  const { endpoint, model } = await resolveServiceMetadata(broker, providerAddress);
+  const resolvedModel = model ?? providerModel;
 
   // Construct OpenAI-compatible chat completion request
+  const verificationPrompt = buildVerificationPrompt(input);
   const chatContent = JSON.stringify({
     model: resolvedModel,
     messages: [
@@ -67,7 +66,7 @@ async function callViaSDK(input: ZeroGComputeInput): Promise<IntegrationResult<Z
       },
       {
         role: 'user',
-        content: buildVerificationPrompt(input),
+        content: verificationPrompt,
       },
     ],
     max_tokens: 512,
@@ -130,8 +129,6 @@ async function callViaSDK(input: ZeroGComputeInput): Promise<IntegrationResult<Z
   // NOTE: 0g-serving-broker 0.4.x returns a boolean from processResponse, not
   // a raw TEE quote. We record chatID as the attestation handle. Upgrading to
   // 0.5+ will expose the full enclave attestation report once available.
-  const attestationHash = chatID ?? stableHash(verdictHash, 'attestation-stub');
-
   return {
     mode: 'live',
     data: {
@@ -141,55 +138,50 @@ async function callViaSDK(input: ZeroGComputeInput): Promise<IntegrationResult<Z
       confidence: parsed.confidence ?? 0.9,
       model: resolvedModel,
       source: `0g-serving-broker@${providerAddress}`,
-      attestationHash,
+      attestationHash: chatID,
+      promptHash: stableHash(verificationPrompt, 'zg-compute-prompt'),
+      responseHash: stableHash(assistantContent, 'zg-compute-response'),
       txHash: undefined,
       signatureValid,
     },
   };
 }
 
-/** Deterministic offline mock for demos without 0G credentials. */
-function callMock(input: ZeroGComputeInput): IntegrationResult<ZeroGComputeResult> {
-  const summaryText = `${input.caseId}:${input.evidenceRoot}:${input.mandateHash}`;
-  const isFraud = summaryText.toLowerCase().includes('fraud') || summaryText.toLowerCase().includes('tamper');
-  const verdictHash = stableHash(summaryText, 'mock-zg-verdict');
-  const attestationHash = stableHash(verdictHash, 'mock-attestation');
+async function resolveServiceMetadata(
+  broker: Awaited<ReturnType<typeof createZGComputeNetworkBroker>>,
+  provider: string,
+): Promise<{ endpoint: string; model?: string }> {
+  if (typeof broker.inference.getServiceMetadata === 'function') {
+    const metadata = await broker.inference.getServiceMetadata(provider);
+    return {
+      endpoint: metadata.endpoint,
+      model: metadata.model,
+    };
+  }
 
-  return {
-    mode: 'mock',
-    data: {
-      verdictHash,
-      compliant: !isFraud,
-      reason: isFraud
-        ? '[MOCK] Evidence hash mismatch — tamper detected'
-        : '[MOCK] All evidence hashes verified — qwen-2.5-7b-instruct simulation',
-      confidence: 0.95,
-      model: PROVIDER_MODEL,
-      source: '0g-compute-mock',
-      attestationHash,
-      txHash: undefined,
-      signatureValid: true,
-    },
-  };
+  if (providerEndpoint) {
+    return {
+      endpoint: providerEndpoint,
+      model: providerModel,
+    };
+  }
+
+  throw new Error(
+    '0G broker SDK does not expose inference.getServiceMetadata; set ZERO_G_PROVIDER_ENDPOINT and ZERO_G_PROVIDER_MODEL explicitly',
+  );
 }
 
 export async function runZeroGComputeVerdict(
   input: ZeroGComputeInput,
 ): Promise<IntegrationResult<ZeroGComputeResult>> {
   if (!isConfigured()) {
-    console.warn(
-      '[0G Compute] Not configured (ZERO_G_RPC_URL / ZERO_G_PRIVATE_KEY / ZERO_G_PROVIDER_ADDRESS missing) — using mock verdict',
-    );
-    return callMock(input);
+    throw new Error('ZERO_G_RPC_URL, ZERO_G_PRIVATE_KEY, and ZERO_G_PROVIDER_ADDRESS are required for real-only 0G Compute verdicts');
   }
 
   try {
     return await callViaSDK(input);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown 0G error';
-    console.warn(`[0G Compute] SDK call failed: ${msg} — falling back to mock`);
-    const result = callMock(input);
-    return { mode: 'mock', data: { ...result.data, reason: `[FALLBACK] ${msg}` } };
+    throw new Error(error instanceof Error ? error.message : 'Unknown 0G error');
   }
 }
 
@@ -212,8 +204,9 @@ export async function recordZeroGComputeVerdict(
 export function getZeroGComputeStatus() {
   return {
     configured: isConfigured(),
-    mode: isConfigured() ? 'live' : 'mock',
+    mode: isConfigured() ? 'live' : 'not-configured',
     providerAddress: providerAddress ?? null,
+    providerEndpoint: providerEndpoint ?? null,
     contractAddress: contractAddress ?? null,
     evidenceRegistry: evidenceRegistryAddress ?? null,
     sdkVersion: '0.4.4',
@@ -228,6 +221,7 @@ function buildVerificationPrompt(input: ZeroGComputeInput): string {
   return `You are verifying a ProofCourt case. Analyze the following evidence and return JSON only.
 
 Case ID: ${input.caseId ?? 'N/A'}
+Verifier agent: ${input.verifierId ?? 'N/A'}
 Evidence root: ${input.evidenceRoot ?? 'N/A'}
 Mandate hash: ${input.mandateHash ?? 'N/A'}
 Permit hash: ${input.permitHash ?? 'N/A'}

@@ -4,9 +4,10 @@
  * Phase 6 changes:
  * - Execution endpoint is POST /api/workflows/{id}/webhook (not /run or /execute)
  * - Auth uses per-workflow wfb_ keys (one per phase)
- * - Status/logs polling uses the org kh_ key on /api/executions/{id}
+ * - Status polling uses the org kh_ key on GET /api/workflows/{workflowId}/executions
+ *   (find execution by id — KeeperHub does not expose GET /api/executions/{id})
  * - x402 USDC payments handled via @keeperhub/wallet paymentSigner.fetch
- * - Graceful mock fallback when keys are absent (demo-safe on laptop)
+ * - Strict real-only behavior: missing keys or failed live execution stop the run
  */
 
 import { stableHash } from './hash.ts';
@@ -17,7 +18,7 @@ import type {
   KeeperHubLogEntry,
 } from './integrationTypes.ts';
 
-// Organisation-scoped key — used for GET /api/workflows, /api/executions
+// Organisation-scoped key — used for GET /api/workflows, GET /api/workflows/{id}/executions
 const keeperHubApiUrl = process.env.KEEPERHUB_API_URL ?? 'https://app.keeperhub.com';
 const orgApiKey = process.env.KEEPERHUB_API_KEY;
 
@@ -96,42 +97,43 @@ async function triggerWebhook(
 
 // ---------------------------------------------------------------------------
 // Polling (uses org kh_ key)
+// KeeperHub returns executions via GET /api/workflows/{workflowId}/executions (array).
+// There is no working GET /api/executions/{id} on app.keeperhub.com (HTML 404).
 // ---------------------------------------------------------------------------
-async function pollExecution(executionId: string): Promise<{
+async function pollExecution(executionId: string, workflowId: string): Promise<{
   status: KeeperHubExecuteResult['status'];
   logs: KeeperHubLogEntry[];
   txHash?: string;
   raw: Record<string, unknown>;
 }> {
-  const headers: HeadersInit = orgApiKey
-    ? { Authorization: `Bearer ${orgApiKey}` }
-    : {};
+  const headers: HeadersInit = {
+    ...(orgApiKey ? { Authorization: `Bearer ${orgApiKey}` } : {}),
+    Accept: 'application/json',
+  };
   const base = keeperHubApiUrl.replace(/\/$/, '');
+  const listUrl = `${base}/api/workflows/${encodeURIComponent(workflowId)}/executions`;
 
   for (let attempt = 0; attempt < maxPolls; attempt++) {
-    const response = await fetch(`${base}/api/executions/${encodeURIComponent(executionId)}`, {
-      headers,
-    });
-    const json: unknown = await response.json().catch(() => ({}));
-    const body = (json as Record<string, unknown>) ?? {};
+    const response = await fetch(listUrl, { headers });
+    const json: unknown = await response.json().catch(() => null);
+    const rows = normalizeExecutionsList(json);
+    const body = rows.find((row) => extractString(row, ['id']) === executionId) ?? null;
 
-    const rawStatus = extractString(body, ['status', 'state']) ?? 'running';
-    if (isTerminal(rawStatus)) {
-      const logsArr = await fetchExecutionLogs(executionId, headers, base);
-      const txHash =
-        logsArr.find((l) => l.txHash)?.txHash ??
-        extractNestedString(body, [
-          ['output', 'txHash'],
-          ['output', 'transactionHash'],
-        ]) ??
-        extractString(body, ['txHash', 'transactionHash']);
+    if (body) {
+      const rawStatus = extractString(body, ['status', 'state']) ?? 'running';
+      if (isTerminal(rawStatus)) {
+        const logsArr = logsFromExecutionRecord(body, executionId);
+        const txHash =
+          logsArr.find((l) => l.txHash)?.txHash ??
+          extractTxHashFromExecution(body);
 
-      return {
-        status: normalizeStatus(rawStatus),
-        logs: logsArr,
-        txHash,
-        raw: body,
-      };
+        return {
+          status: normalizeStatus(rawStatus),
+          logs: logsArr.length > 0 ? logsArr : syntheticLogFromTx(executionId, txHash),
+          txHash,
+          raw: body,
+        };
+      }
     }
     await delay(pollMs);
   }
@@ -139,67 +141,54 @@ async function pollExecution(executionId: string): Promise<{
   throw new Error(`KeeperHub execution ${executionId} did not reach terminal state in time`);
 }
 
-async function fetchExecutionLogs(
-  executionId: string,
-  headers: HeadersInit,
-  base: string,
-): Promise<KeeperHubLogEntry[]> {
-  try {
-    const res = await fetch(`${base}/api/executions/${encodeURIComponent(executionId)}/logs`, {
-      headers,
-    });
-    const json: unknown = await res.json().catch(() => ({}));
-    const body = json as Record<string, unknown>;
-    const arr = Array.isArray(body) ? body : Array.isArray(body?.data) ? (body.data as unknown[]) : [];
-    return normalizeLogs(arr, executionId);
-  } catch {
-    return [];
+function normalizeExecutionsList(json: unknown): Record<string, unknown>[] {
+  if (Array.isArray(json)) return json as Record<string, unknown>[];
+  if (json && typeof json === 'object') {
+    const data = (json as Record<string, unknown>).data;
+    if (Array.isArray(data)) return data as Record<string, unknown>[];
+    const items = (json as Record<string, unknown>).items;
+    if (Array.isArray(items)) return items as Record<string, unknown>[];
   }
+  return [];
 }
 
-// ---------------------------------------------------------------------------
-// Mock fallback (demo on laptop without KeeperHub account)
-// ---------------------------------------------------------------------------
-function buildMock(input: KeeperHubExecuteInput): IntegrationResult<KeeperHubExecuteResult> {
-  const workflowId = workflowIds[input.phase] ?? `mock-wf-${input.phase}`;
-  const executionId = `mock-exec-${Date.now()}`;
-  const txHash = `0x${stableHash(JSON.stringify(input), 'mock-tx').slice(0, 64)}`;
-  const payloadHash = stableHash(JSON.stringify(input.payload));
+/** Walk KeeperHub execution.output for tx hashes (shape varies by workflow). */
+function extractTxHashFromExecution(body: Record<string, unknown>): string | undefined {
+  const out = body.output;
+  if (!out || typeof out !== 'object') {
+    return extractString(body, ['txHash', 'transactionHash']);
+  }
+  const o = out as Record<string, unknown>;
+  const nested =
+    extractNestedString(o, [
+      ['result', 'txHash'],
+      ['result', 'transactionHash'],
+      ['txHash'],
+      ['transactionHash'],
+    ]) ?? extractNestedString(body, [['output', 'result', 'txHash'], ['output', 'result', 'transactionHash']]);
+  return nested ?? extractString(o, ['txHash', 'transactionHash']);
+}
 
-  const logMessages: Record<KeeperHubExecuteInput['phase'], string> = {
-    'proof-trial': '[MOCK] Trial proof submitted — 0.00001 USDC transfer simulated',
-    'execute-mandate': '[MOCK] Worker mandate executed — payout route selected',
-    'atomic-settlement':
-      input.payload?.verdict === 'PASS'
-        ? '[MOCK] Settlement PASS — worker paid via web3/transfer-token'
-        : '[MOCK] Settlement FAIL — requester refunded',
-  };
+function logsFromExecutionRecord(body: Record<string, unknown>, executionId: string): KeeperHubLogEntry[] {
+  const out = body.output;
+  if (!out || typeof out !== 'object') return [];
+  const logs = (out as Record<string, unknown>).logs;
+  if (!Array.isArray(logs)) return [];
+  return normalizeLogs(logs as unknown[], executionId);
+}
 
-  return {
-    mode: 'mock',
-    data: {
-      workflowId,
-      phase: input.phase,
-      executionId,
-      status: 'Completed',
-      action: input.action,
+function syntheticLogFromTx(executionId: string, txHash: string | undefined): KeeperHubLogEntry[] {
+  if (!txHash) return [];
+  return [
+    {
+      timestamp: new Date().toISOString(),
+      node: 'keeperhub.execution',
+      level: 'info',
+      message: `Execution ${executionId} completed`,
       txHash,
-      payloadHash,
-      logHash: stableHash(txHash),
-      logs: [
-        {
-          timestamp: new Date().toISOString(),
-          node: `keeperhub.${input.phase}`,
-          level: 'info',
-          message: logMessages[input.phase],
-          txHash,
-          outputHash: stableHash(txHash),
-        },
-      ],
-      gasOptimized: false,
-      retryCount: 0,
+      outputHash: stableHash(txHash),
     },
-  };
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -209,10 +198,9 @@ export async function executeKeeperHubWorkflow(
   input: KeeperHubExecuteInput,
 ): Promise<IntegrationResult<KeeperHubExecuteResult>> {
   if (!isConfigured(input.phase)) {
-    console.warn(
-      `[KeeperHub] ${input.phase} not configured (KEEPERHUB_${input.phase.toUpperCase().replace(/-/g, '_')}_KEY missing) — using mock`,
+    throw new Error(
+      `KeeperHub ${input.phase} is not configured. Set its workflow ID and wfb_ key before running ProofCourt.`,
     );
-    return buildMock(input);
   }
 
   const workflowId = workflowIds[input.phase]!;
@@ -227,7 +215,7 @@ export async function executeKeeperHubWorkflow(
       metadata: { source: 'proofcourt', localWorkflowId: input.workflowId },
     });
 
-    const terminal = await pollExecution(executionId);
+    const terminal = await pollExecution(executionId, workflowId);
     const payloadHash = stableHash(JSON.stringify(input.payload));
     const txHash = terminal.txHash;
 
@@ -254,10 +242,7 @@ export async function executeKeeperHubWorkflow(
       },
     };
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Unknown KeeperHub error';
-    console.warn(`[KeeperHub] ${input.phase} live call failed: ${msg} — using mock`);
-    const mock = buildMock(input);
-    return { mode: 'mock', data: { ...mock.data, logs: [{ ...mock.data.logs[0], message: `[FALLBACK] ${msg}` }] } };
+    throw new Error(error instanceof Error ? error.message : 'Unknown KeeperHub error');
   }
 }
 
@@ -270,7 +255,7 @@ export function getKeeperHubStatus() {
 
   return {
     configured: configuredPhases.length === 3,
-    mode: configuredPhases.length === 3 ? 'live' : configuredPhases.length > 0 ? 'partial' : 'mock',
+    mode: configuredPhases.length === 3 ? 'live' : configuredPhases.length > 0 ? 'partial' : 'not-configured',
     endpoint: keeperHubApiUrl,
     workflows: configuredPhases,
     x402Enabled: Boolean(process.env.KEEPERHUB_TRIAL_KEY ?? process.env.KEEPERHUB_EXECUTE_KEY ?? process.env.KEEPERHUB_SETTLE_KEY),
