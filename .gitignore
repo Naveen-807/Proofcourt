@@ -11,3 +11,6 @@ axl-data/
 *.log
 .env*
 !.env.example
+
+# Markdown (not versioned; add `!path/to/file.md` to track specific files)
+*.md
