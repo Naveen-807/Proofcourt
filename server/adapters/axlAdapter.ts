@@ -31,8 +31,7 @@ export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationRe
     const targetTopology = await readTopologyNode({ role: targetNode, endpoint: targetUrl });
     const targetPeerId = targetTopology.peerId;
     if (!targetPeerId) {
-      // Nodes offline — fall back to mock so the state machine can proceed for demo
-      return buildAxlMockResult(input, requestMetadata, targetNode, 'peer-id-unavailable');
+      throw new Error(`AXL ${targetNode} node is online but did not expose a peer id`);
     }
 
     const response = await fetch(buildProtocolUrl(sourceUrl, input.envelope, targetPeerId), {
@@ -66,8 +65,7 @@ export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationRe
       data,
     };
   } catch (error) {
-    // AXL nodes are offline — use mock mode so the demo state machine can still run
-    return buildAxlMockResult(input, requestMetadata, targetNode, error instanceof Error ? error.message : 'Unknown AXL error');
+    throw new Error(error instanceof Error ? error.message : 'Unknown AXL error');
   }
 }
 
@@ -80,29 +78,16 @@ export async function getAxlStatus() {
     .filter(([, endpoint]) => Boolean(endpoint))
     .map(([role, endpoint]) => ({ role, endpoint: endpoint! }));
   const topology = await Promise.all(configuredNodes.map(readTopologyNode));
+  const allNodesLive = configuredNodes.length === 5 &&
+    topology.every((node) => node.status === 'online' && Boolean(node.peerId));
 
   return {
-    configured: configuredNodes.length === 5,
-    mode: configuredNodes.length === 5 ? 'live' : 'not-configured',
+    configured: allNodesLive,
+    mode: allNodesLive ? 'live' : configuredNodes.length === 5 ? 'offline' : 'not-configured',
     endpoint: axlNodeUrl ?? null,
     separateNodes: configuredNodes.length === 5,
     nodes: topology,
   };
-}
-
-function buildAxlMockResult(
-  input: AxlSendInput,
-  requestMetadata: AxlSendResult,
-  targetNode: string,
-  reason: string,
-): IntegrationResult<AxlSendResult> {
-  const mockData: AxlSendResult = {
-    ...requestMetadata,
-    nodeId: `mock-${targetNode}-node`,
-    hash: stableHash({ protocol: 'proofcourt-axl-mock', reason, requestMetadata }),
-  };
-  recordTranscript(input.workflowId, mockData);
-  return { mode: 'mock', data: mockData };
 }
 
 function buildAxlRequestMetadata(input: AxlSendInput): AxlSendResult {

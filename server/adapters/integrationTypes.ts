@@ -1,4 +1,4 @@
-export type IntegrationMode = 'live' | 'mock';
+export type IntegrationMode = 'live';
 
 export interface IntegrationResult<T> {
   mode: IntegrationMode;
@@ -81,6 +81,7 @@ export interface ZeroGStoreResult {
 
 export interface ZeroGComputeInput {
   caseId: string;
+  verifierId?: string;
   evidenceRoot: string;
   mandateHash: string;
   permitHash: string;
@@ -97,6 +98,8 @@ export interface ZeroGComputeResult {
   model: string;
   source: string;
   attestationHash?: string;
+  promptHash?: string;
+  responseHash?: string;
   txHash?: string;
   signatureValid?: boolean;
 }
