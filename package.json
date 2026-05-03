@@ -15,6 +15,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "mcp:server": "node --experimental-strip-types packages/mcp-server/src/index.ts",
+    "mcp:http": "PROOFCOURT_MCP_HTTP_PORT=8788 node --experimental-strip-types packages/mcp-server/src/index.ts",
+    "proofcourt": "node --experimental-strip-types packages/cli/src/index.mjs",
+    "demo:run": "node --experimental-strip-types scripts/demo-run.mjs",
+    "demo:cheat": "node --experimental-strip-types packages/agents/worker/cheat-worker.mjs --mode=cheat",
+    "demo:honest": "node --experimental-strip-types packages/agents/worker/cheat-worker.mjs --honest",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
