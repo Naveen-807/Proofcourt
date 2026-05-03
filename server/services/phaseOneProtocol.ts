@@ -14,6 +14,10 @@ const rpcUrl = process.env.RPC_URL ?? process.env.ZERO_G_RPC_URL;
 const agentInftAddress = process.env.AGENT_INFT_ADDRESS;
 const agentDnsTokenIds = process.env.AGENT_DNS_TOKEN_IDS;
 const agentDnsRoles = process.env.AGENT_DNS_ROLES;
+const agentMemoryUploadTimeoutMs = Number(process.env.PROOFCOURT_AGENT_MEMORY_UPLOAD_TIMEOUT_MS ?? 90_000);
+const agentSlaUploadTimeoutMs = Number(process.env.PROOFCOURT_AGENT_SLA_UPLOAD_TIMEOUT_MS ?? 120_000);
+const agentDnsRpcTimeoutMs = Number(process.env.PROOFCOURT_AGENT_DNS_RPC_TIMEOUT_MS ?? 20_000);
+const agentDnsRpcRetries = Number(process.env.PROOFCOURT_AGENT_DNS_RPC_RETRIES ?? 2);
 
 const AGENT_INFT_ABI = [
   'function ownerOf(uint256 tokenId) external view returns (address)',
@@ -34,12 +38,43 @@ export async function createPhaseOneArtifacts(mandate: Mandate): Promise<{
   agentDnsResolution: AgentDNSResolution;
   agentSla: AgentSLA;
 }> {
-  const agentDnsResolution = await resolveAgentDns(mandate);
-  const agentSla = await createAndStoreAgentSla(mandate, agentDnsResolution);
+  return createPhaseOneArtifactsWithProgress(mandate);
+}
+
+export async function createPhaseOneArtifactsWithProgress(
+  mandate: Mandate,
+  hooks?: {
+    onAgentMemoryStarted?: (payload: { agentId: string; completed: number; total: number }) => void | Promise<void>;
+    onAgentMemoryStored?: (payload: { agentId: string; completed: number; total: number; root: string }) => void | Promise<void>;
+    onAgentDnsResolved?: (resolution: AgentDNSResolution) => void | Promise<void>;
+    onAgentSlaStarted?: () => void | Promise<void>;
+    onAgentSlaStored?: (sla: AgentSLA) => void | Promise<void>;
+  },
+): Promise<{
+  agentDnsResolution: AgentDNSResolution;
+  agentSla: AgentSLA;
+}> {
+  const agentDnsResolution = await resolveAgentDns(
+    mandate,
+    hooks?.onAgentMemoryStarted,
+    hooks?.onAgentMemoryStored,
+    hooks?.onAgentDnsResolved,
+  );
+  const agentSla = await createAndStoreAgentSla(
+    mandate,
+    agentDnsResolution,
+    hooks?.onAgentSlaStarted,
+    hooks?.onAgentSlaStored,
+  );
   return { agentDnsResolution, agentSla };
 }
 
-async function resolveAgentDns(mandate: Mandate): Promise<AgentDNSResolution> {
+async function resolveAgentDns(
+  mandate: Mandate,
+  onAgentMemoryStarted?: (payload: { agentId: string; completed: number; total: number }) => void | Promise<void>,
+  onAgentMemoryStored?: (payload: { agentId: string; completed: number; total: number; root: string }) => void | Promise<void>,
+  onAgentDnsResolved?: (resolution: AgentDNSResolution) => void | Promise<void>,
+): Promise<AgentDNSResolution> {
   if (!rpcUrl || !agentInftAddress || !agentDnsTokenIds) {
     throw new Error('RPC_URL/ZERO_G_RPC_URL, AGENT_INFT_ADDRESS, and AGENT_DNS_TOKEN_IDS are required for real AgentDNS lookup');
   }
@@ -52,18 +87,13 @@ async function resolveAgentDns(mandate: Mandate): Promise<AgentDNSResolution> {
     throw new Error('AGENT_DNS_TOKEN_IDS must include at least one minted AgentINFT token id');
   }
 
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const provider = new ethers.JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true });
   const agentInft = new ethers.Contract(agentInftAddress, AGENT_INFT_ABI, provider);
 
   try {
     const roleHints = rolesForTokens(tokenIds.length);
     const baseRecords = await Promise.all(tokenIds.map(async (tokenId, index) => {
-      const [holder, metadataURI, intelligencePointer, reputation] = await Promise.all([
-        agentInft.ownerOf(BigInt(tokenId)) as Promise<string>,
-        agentInft.tokenURI(BigInt(tokenId)) as Promise<string>,
-        agentInft.intelligencePointer(BigInt(tokenId)) as Promise<string>,
-        agentInft.getReputation(BigInt(tokenId)) as Promise<ReputationTuple>,
-      ]);
+      const [holder, metadataURI, intelligencePointer, reputation] = await readAgentInftToken(agentInft, tokenId);
       const role = roleHints[index] ?? 'Worker';
       const score = Number(reputation.score);
       const agentId = agentIdForRole(role, index);
@@ -82,19 +112,27 @@ async function resolveAgentDns(mandate: Mandate): Promise<AgentDNSResolution> {
       };
     }));
 
-    const records: AgentDNSRecord[] = [];
-    for (const baseRecord of baseRecords) {
-      const memory = await storeAgentMemoryCapsule(mandate, baseRecord);
+    await onAgentMemoryStarted?.({
+      agentId: 'agent-memory-batch',
+      completed: 0,
+      total: 1,
+    });
+    const memory = await storeAgentMemoryBatchCapsule(mandate, baseRecords);
+    await onAgentMemoryStored?.({
+      agentId: 'agent-memory-batch',
+      completed: 1,
+      total: 1,
+      root: memory.root,
+    });
 
-      records.push({
-        ...baseRecord,
-        memoryRoot: memory.root,
-        memoryTxHash: memory.txHash,
-        memoryUpdatedAt: memory.updatedAt,
-        explorerUrl: `https://chainscan-galileo.0g.ai/token/${agentInftAddress}?a=${baseRecord.tokenId}`,
-        earnings: '0 ETH',
-      });
-    }
+    const records: AgentDNSRecord[] = baseRecords.map((baseRecord) => ({
+      ...baseRecord,
+      memoryRoot: memory.root,
+      memoryTxHash: memory.txHash,
+      memoryUpdatedAt: memory.updatedAt,
+      explorerUrl: `https://chainscan-galileo.0g.ai/token/${agentInftAddress}?a=${baseRecord.tokenId}`,
+      earnings: '0 OG',
+    }));
 
     const selectedAgentIds = records
       .filter((agent) => agent.role === 'Verifier' || agent.score >= mandate.minAgentTrustScore)
@@ -112,7 +150,7 @@ async function resolveAgentDns(mandate: Mandate): Promise<AgentDNSResolution> {
       records,
     });
 
-    return {
+    const resolution: AgentDNSResolution = {
       id: `agentdns_${mandate.id}`,
       mandateId: mandate.id,
       source: 'onchain-agent-inft-0g',
@@ -124,12 +162,39 @@ async function resolveAgentDns(mandate: Mandate): Promise<AgentDNSResolution> {
       rejectedAgentIds,
       resolutionHash,
     };
+    await onAgentDnsResolved?.(resolution);
+    return resolution;
   } finally {
     provider.destroy();
   }
 }
 
-async function createAndStoreAgentSla(mandate: Mandate, agentDnsResolution: AgentDNSResolution): Promise<AgentSLA> {
+async function readAgentInftToken(
+  agentInft: ethers.Contract,
+  tokenId: string,
+): Promise<[string, string, string, ReputationTuple]> {
+  return withRetry(
+    () => withTimeout(
+      Promise.all([
+        agentInft.ownerOf(BigInt(tokenId)) as Promise<string>,
+        agentInft.tokenURI(BigInt(tokenId)) as Promise<string>,
+        agentInft.intelligencePointer(BigInt(tokenId)) as Promise<string>,
+        agentInft.getReputation(BigInt(tokenId)) as Promise<ReputationTuple>,
+      ]),
+      agentDnsRpcTimeoutMs,
+      `AgentDNS token ${tokenId} RPC read timed out after ${Math.round(agentDnsRpcTimeoutMs / 1000)}s`,
+    ),
+    agentDnsRpcRetries,
+    `AgentDNS token ${tokenId}`,
+  );
+}
+
+async function createAndStoreAgentSla(
+  mandate: Mandate,
+  agentDnsResolution: AgentDNSResolution,
+  onAgentSlaStarted?: () => void | Promise<void>,
+  onAgentSlaStored?: (sla: AgentSLA) => void | Promise<void>,
+): Promise<AgentSLA> {
   const worker = agentDnsResolution.records.find((agent) => agent.role === 'Worker' && agentDnsResolution.selectedAgentIds.includes(agent.agentId));
   const requester = agentDnsResolution.records.find((agent) => agent.role === 'Requester');
   const verifiers = agentDnsResolution.records.filter((agent) => agent.role === 'Verifier');
@@ -177,54 +242,67 @@ async function createAndStoreAgentSla(mandate: Mandate, agentDnsResolution: Agen
     agentMemoryRoots,
   };
   const slaHash = stableHash(baseSla);
-  const result = await storeEvidenceOnZeroG({
-    caseId: baseSla.id,
-    evidence: {
-      version: 'proofcourt.agent-sla.v1',
-      ...baseSla,
-      slaHash,
-      agentDnsResolution,
-    },
-  });
+  await onAgentSlaStarted?.();
+  const result = await withTimeout(
+    storeEvidenceOnZeroG({
+      caseId: baseSla.id,
+      evidence: {
+        version: 'proofcourt.agent-sla.v1',
+        ...baseSla,
+        slaHash,
+        agentDnsResolution,
+      },
+    }),
+    agentSlaUploadTimeoutMs,
+    `AgentSLA 0G upload timed out after ${Math.round(agentSlaUploadTimeoutMs / 1000)}s`,
+  );
 
-  return {
+  const sla = {
     ...baseSla,
     slaHash,
     zeroGRoot: result.data.root,
     zeroGTxHash: result.data.txHash,
     storedAt: new Date().toISOString(),
   };
+  await onAgentSlaStored?.(sla);
+  return sla;
 }
 
-async function storeAgentMemoryCapsule(
+async function storeAgentMemoryBatchCapsule(
   mandate: Mandate,
-  record: Omit<AgentDNSRecord, 'memoryRoot' | 'memoryTxHash' | 'memoryUpdatedAt' | 'explorerUrl' | 'earnings'>,
+  records: Array<Omit<AgentDNSRecord, 'memoryRoot' | 'memoryTxHash' | 'memoryUpdatedAt' | 'explorerUrl' | 'earnings'>>,
 ): Promise<{ root: string; txHash?: string; updatedAt: string }> {
   const updatedAt = new Date().toISOString();
-  const result = await storeEvidenceOnZeroG({
-    caseId: `agent-memory_${record.tokenId}_${mandate.id}`,
-    evidence: {
-      version: 'proofcourt.agent-memory.v1',
-      mandateId: mandate.id,
-      agentId: record.agentId,
-      role: record.role,
-      tokenId: record.tokenId,
-      holder: record.holder,
-      metadataURI: record.metadataURI,
-      intelligencePointer: record.intelligencePointer,
-      memory: {
-        currentGoal: mandate.text,
-        coordinationRole: roleMemoryPolicy(record.role),
-        reputation: {
-          score: record.score,
-          casesTotal: record.casesTotal,
-          casesPassed: record.casesPassed,
-          lastEvidenceHash: record.lastEvidenceHash,
-        },
+  const result = await withTimeout(
+    storeEvidenceOnZeroG({
+      caseId: `agent-memory-batch_${mandate.id}`,
+      evidence: {
+        version: 'proofcourt.agent-memory-batch.v1',
+        mandateId: mandate.id,
+        memories: records.map((record) => ({
+          agentId: record.agentId,
+          role: record.role,
+          tokenId: record.tokenId,
+          holder: record.holder,
+          metadataURI: record.metadataURI,
+          intelligencePointer: record.intelligencePointer,
+          memory: {
+            currentGoal: mandate.text,
+            coordinationRole: roleMemoryPolicy(record.role),
+            reputation: {
+              score: record.score,
+              casesTotal: record.casesTotal,
+              casesPassed: record.casesPassed,
+              lastEvidenceHash: record.lastEvidenceHash,
+            },
+          },
+        })),
+        updatedAt,
       },
-      updatedAt,
-    },
-  });
+    }),
+    agentMemoryUploadTimeoutMs,
+    `Agent memory batch 0G upload timed out after ${Math.round(agentMemoryUploadTimeoutMs / 1000)}s`,
+  );
 
   return {
     root: result.data.root,
@@ -252,6 +330,42 @@ function actionForType(type: AgentSLA['taskActionType']): string {
   if (type === 'weeklyTransfer') return 'weeklyTransfer()';
   if (type === 'proofOnlyTask') return 'produceProofOnlyArtifact()';
   return 'vaultDeposit()';
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  retries: number,
+  label: string,
+): Promise<T> {
+  let lastError: unknown;
+  const attempts = Math.max(1, retries + 1);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+      }
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${label} failed after ${attempts} attempts: ${message}`);
 }
 
 function rolesForTokens(count: number): AgentRole[] {

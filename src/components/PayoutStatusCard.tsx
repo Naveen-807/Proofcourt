@@ -20,7 +20,7 @@ export default function PayoutStatusCard({ state, payerAddress, run }: Props) {
   const status = isBlocked ? 'Payout blocked' : isReleased ? 'Payout released' : isVerified ? 'Proof verified' : isLocked ? 'Escrow locked' : funded ? 'Escrow funded' : 'Awaiting funding';
   const fundedAmount = run?.settlementReceipt?.fundedAmount;
   const executorReward = run?.settlementReceipt?.fundedAmount ?? run?.agentSla?.payout;
-  const displayAmount = fundedAmount?.replace(' ETH', '');
+  const displayAmount = fundedAmount?.replace(/ (?:ETH|OG|0G)$/i, '');
 
   return (
     <section className="court-panel p-5">
@@ -40,7 +40,7 @@ export default function PayoutStatusCard({ state, payerAddress, run }: Props) {
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/38">Total funded</div>
             <div className="mt-1 text-4xl font-bold tracking-tight">
-              {displayAmount ?? '--'} {displayAmount && <span className="text-base text-white/42">ETH</span>}
+              {displayAmount ?? '--'} {displayAmount && <span className="text-base text-white/42">OG</span>}
             </div>
           </div>
           <div className="text-right">

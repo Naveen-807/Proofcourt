@@ -2,15 +2,17 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { AppState, ProofCourtRun } from '../types';
 import { cn } from '../lib/utils';
-import { CheckCircle2, Clock3, FileCheck2, Lock, Play, ShieldAlert, SlidersHorizontal, Wallet, XCircle } from 'lucide-react';
+import { CheckCircle2, Clock3, FileCheck2, Lock, Play, RotateCcw, ShieldAlert, SlidersHorizontal, Wallet, XCircle } from 'lucide-react';
 
 interface Props {
   state: AppState;
   progress: number;
   run: ProofCourtRun | null;
   onStart: () => void;
+  onRetryBootstrap: () => void;
   walletConnected: boolean;
   escrowFunded: boolean;
+  isBootstrappingRun: boolean;
 }
 
 const STATE_COPY: Record<AppState, string> = {
@@ -58,11 +60,14 @@ const stateOrder: AppState[] = [
   'payout_blocked',
 ];
 
-export default function CommitTimeline({ state, progress, run, onStart, walletConnected, escrowFunded }: Props) {
+export default function CommitTimeline({ state, progress, run, onStart, onRetryBootstrap, walletConnected, escrowFunded, isBootstrappingRun }: Props) {
   const isStarted = state !== 'workflow_generated' && state !== 'agents_selected';
-  const isBlocked = state === 'tamper_detected' || state === 'payout_blocked';
+  const phaseOneFailed = Boolean(run?.bootstrapError);
+  const isBlocked = state === 'tamper_detected' || state === 'payout_blocked' || phaseOneFailed;
   const isVerified = ['proof_verified', 'payout_released', 'reputation_updated'].includes(state);
   const currentIndex = stateOrder.indexOf(state);
+  const runReady = Boolean(run?.agentDnsResolution && run?.agentSla?.zeroGRoot);
+  const canStart = walletConnected && runReady && !isBootstrappingRun && !phaseOneFailed && !isStarted;
 
   return (
     <section className="grid grid-cols-[0.92fr_1.08fr] gap-6">
@@ -93,13 +98,23 @@ export default function CommitTimeline({ state, progress, run, onStart, walletCo
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <PermitFact label="AgentDNS" value={run?.agentDnsResolution?.resolutionHash?.slice(0, 18) ?? 'No live AgentDNS'} />
-            <PermitFact label="AgentSLA" value={run?.agentSla?.slaHash?.slice(0, 18) ?? 'No live SLA'} tone="gold" />
-            <PermitFact label="0G SLA root" value={run?.agentSla?.zeroGRoot?.slice(0, 18) ?? 'No 0G SLA root'} />
-            <PermitFact label="Deadline" value={run?.agentSla?.deadlineIso ? new Date(run.agentSla.deadlineIso).toLocaleTimeString() : 'No live SLA'} />
+            <PermitFact label="AgentDNS" value={run?.agentDnsResolution?.resolutionHash?.slice(0, 18) ?? (isBootstrappingRun ? 'Preparing live AgentDNS...' : 'No live AgentDNS')} />
+            <PermitFact label="AgentSLA" value={run?.agentSla?.slaHash?.slice(0, 18) ?? (isBootstrappingRun ? 'Preparing live SLA...' : 'No live SLA')} tone="gold" />
+            <PermitFact label="0G SLA root" value={run?.agentSla?.zeroGRoot?.slice(0, 18) ?? (isBootstrappingRun ? 'Publishing 0G SLA root...' : 'No 0G SLA root')} />
+            <PermitFact label="Deadline" value={run?.agentSla?.deadlineIso ? new Date(run.agentSla.deadlineIso).toLocaleTimeString() : (isBootstrappingRun ? 'Calculating deadline...' : 'No live SLA')} />
             <PermitFact label="Required proof" value="AXL + KeeperHub + 0G" tone="green" />
             <PermitFact label="Condition" value="No payout without proof" />
           </div>
+
+          {phaseOneFailed && (
+            <div className="mt-5 rounded-[10px] border border-[#EF4D5B]/30 bg-[#EF4D5B]/10 p-4">
+              <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-[#FF8A96]">
+                <ShieldAlert className="h-3.5 w-3.5" />
+                Phase 1 failed
+              </div>
+              <div className="text-sm leading-6 text-white/68">{run?.bootstrapError}</div>
+            </div>
+          )}
 
           <div className="mt-5 rounded-[10px] border border-white/10 bg-black/20 p-4">
             <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-white/48">
@@ -115,14 +130,34 @@ export default function CommitTimeline({ state, progress, run, onStart, walletCo
         </div>
 
         <div className="mt-5 grid grid-cols-3 gap-3">
-          <button
-            onClick={onStart}
-            disabled={isStarted || !walletConnected}
-            className={cn('court-button court-button-primary col-span-2', isStarted && 'bg-white/10 text-white/45 shadow-none')}
-          >
-            {walletConnected ? <Play className="h-4 w-4 fill-current" /> : <Wallet className="h-4 w-4" />}
-            {walletConnected ? (isStarted ? 'Permit Approved' : escrowFunded ? 'Approve Permit' : 'Fund Escrow + Approve') : 'Connect Wallet'}
-          </button>
+          {phaseOneFailed ? (
+            <button
+              onClick={onRetryBootstrap}
+              className="court-button court-button-primary col-span-2"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Retry Phase 1
+            </button>
+          ) : (
+            <button
+              onClick={onStart}
+              disabled={!canStart}
+              className={cn('court-button court-button-primary col-span-2', !canStart && 'bg-white/10 text-white/45 shadow-none')}
+            >
+              {!walletConnected ? <Wallet className="h-4 w-4" /> : <Play className="h-4 w-4 fill-current" />}
+              {!walletConnected
+                ? 'Connect Wallet'
+                : isBootstrappingRun
+                  ? 'Preparing Live Run...'
+                  : !runReady
+                    ? 'Await Live AgentDNS + SLA'
+                    : isStarted
+                      ? 'Permit Approved'
+                      : escrowFunded
+                        ? 'Approve Permit'
+                        : 'Fund Escrow + Approve'}
+            </button>
+          )}
           <button type="button" disabled className="court-button court-button-secondary" title="Visual review control only; execution logic is unchanged.">
             <SlidersHorizontal className="h-4 w-4" />
             Modify
@@ -151,7 +186,7 @@ export default function CommitTimeline({ state, progress, run, onStart, walletCo
             const stepIndex = stateOrder.indexOf(step.at);
             const complete = currentIndex >= stepIndex;
             const active = !complete && currentIndex + 1 === stepIndex;
-            const failed = isBlocked && index >= 6;
+            const failed = phaseOneFailed ? index === 1 : isBlocked && index >= 6;
 
             return (
               <div key={step.label} className="grid grid-cols-[32px_1fr] gap-3">

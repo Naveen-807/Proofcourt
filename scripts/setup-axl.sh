@@ -11,7 +11,7 @@ GOMODCACHE_DIR="${GOMODCACHE:-$ROOT_DIR/.proofcourt/go-mod}"
 
 roles=(requester worker verifier-1 verifier-2 verifier-3)
 api_ports=(9002 9012 9022 9032 9042)
-tcp_ports=(7002 7012 7022 7032 7042)
+tcp_ports=(7002 7002 7002 7002 7002)
 ygg_ports=(9102 9112 9122 9132 9142)
 
 mkdir -p "$ROOT_DIR/bin" "$ROOT_DIR/axl-data" "$ROOT_DIR/.proofcourt" "$GOCACHE_DIR" "$GOMODCACHE_DIR"
@@ -43,7 +43,6 @@ for i in "${!roles[@]}"; do
   listen_json="[\"tls://127.0.0.1:${ygg_ports[$i]}\"]"
   if [ "$role" != "requester" ]; then
     peers_json="[\"tls://127.0.0.1:${ygg_ports[0]}\"]"
-    listen_json="[]"
   fi
 
   cat > "$config_path" <<JSON

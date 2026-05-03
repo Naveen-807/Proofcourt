@@ -2,7 +2,8 @@ import 'dotenv/config';
 import express, { type ErrorRequestHandler } from 'express';
 import {
   createRun,
-  createWorkflow,
+  createWorkflowFromMandate,
+  parseMandate,
   type ProofCourtRun,
   type WorkflowResponse,
 } from '../src/domain/proofcourt.ts';
@@ -19,7 +20,8 @@ import {
   restoreRunWithIntegrations,
   tamperRunWithIntegrations,
 } from './services/integratedRun.ts';
-import { createPhaseOneArtifacts } from './services/phaseOneProtocol.ts';
+import { createPhaseOneArtifactsWithProgress } from './services/phaseOneProtocol.ts';
+import { parseMandateWithZeroG } from './services/mandateIntentService.ts';
 import { hydratePersistedState, persistRun, persistWorkflow } from './services/runPersistence.ts';
 import { getEscrowFundingIntent } from './services/settlementService.ts';
 
@@ -28,10 +30,12 @@ const port = Number(process.env.PROOFCOURT_API_PORT ?? 8787);
 const host = process.env.PROOFCOURT_API_HOST ?? '127.0.0.1';
 const workflows = new Map<string, WorkflowResponse>();
 const runs = new Map<string, ProofCourtRun>();
+const phaseOneBootstrapDeadlineMs = Number(process.env.PROOFCOURT_PHASE_ONE_BOOTSTRAP_TIMEOUT_MS ?? 8 * 60 * 1000);
+const activeBootstrapJobs = new Map<string, { token: symbol; startedAt: number; timer: ReturnType<typeof setTimeout> }>();
 
 const persisted = hydratePersistedState();
 for (const [id, workflow] of persisted.workflows) workflows.set(id, workflow);
-for (const [id, run] of persisted.runs) runs.set(id, run);
+for (const [id, run] of persisted.runs) runs.set(id, markStaleBootstrapIfNeeded(run));
 
 app.use(express.json());
 const jsonErrorHandler: ErrorRequestHandler = (error, _req, res, next) => {
@@ -81,7 +85,174 @@ app.get('/api/axl/transcript/:workflowId', (req, res) => {
   });
 });
 
-app.post('/api/workflows/generate', (req, res) => {
+function startPhaseOneBootstrap(runId: string, workflow: WorkflowResponse) {
+  if (activeBootstrapJobs.has(runId)) return;
+
+  const token = Symbol(runId);
+  const timer = setTimeout(() => {
+    failBootstrapRun(runId, token, `Phase 1 bootstrap timed out after ${Math.round(phaseOneBootstrapDeadlineMs / 60000)} minutes`);
+  }, phaseOneBootstrapDeadlineMs);
+  activeBootstrapJobs.set(runId, { token, startedAt: Date.now(), timer });
+
+  void (async () => {
+    try {
+      const updateRunIfActive = (mutator: (current: ProofCourtRun) => ProofCourtRun) => {
+        if (activeBootstrapJobs.get(runId)?.token !== token) return;
+        const current = runs.get(runId);
+        if (!current) return;
+        const next = mutator(current);
+        runs.set(next.id, next);
+        persistRun(next);
+      };
+
+      const { agentDnsResolution, agentSla } = await createPhaseOneArtifactsWithProgress(workflow.mandate, {
+        onAgentMemoryStarted: ({ agentId, completed, total }) => {
+          updateRunIfActive((current) => ({
+            ...current,
+            progress: Math.max(current.progress, 5 + completed * 8),
+            events: [
+              ...current.events,
+              `Agent memory upload started for ${agentId} (${completed + 1}/${total})`,
+            ],
+          }));
+        },
+        onAgentMemoryStored: ({ agentId, completed, total, root }) => {
+          updateRunIfActive((current) => ({
+            ...current,
+            progress: Math.min(5 + completed * 8, 45),
+            events: [
+              ...current.events,
+              `0G agent memory stored for ${agentId} (${completed}/${total}): ${root.slice(0, 18)}`,
+            ],
+          }));
+        },
+        onAgentDnsResolved: (resolution) => {
+          updateRunIfActive((current) => ({
+            ...current,
+            progress: 55,
+            agentDnsResolution: resolution,
+            selectedAgentIds: resolution.selectedAgentIds,
+            rejectedAgentIds: resolution.rejectedAgentIds,
+            events: [
+              ...current.events,
+              `AgentDNS resolved from Agent iNFT contract: ${resolution.resolutionHash}`,
+            ],
+          }));
+        },
+        onAgentSlaStarted: () => {
+          updateRunIfActive((current) => ({
+            ...current,
+            progress: Math.max(current.progress, 60),
+            events: [...current.events, 'AgentSLA upload started on 0G Storage'],
+          }));
+        },
+        onAgentSlaStored: (sla) => {
+          updateRunIfActive((current) => ({
+            ...current,
+            progress: 70,
+            agentSla: sla,
+            events: [
+              ...current.events,
+              ...(sla.zeroGRoot ? [`AgentSLA stored on 0G before permit: ${sla.zeroGRoot}`] : []),
+            ],
+          }));
+        },
+      });
+
+      if (activeBootstrapJobs.get(runId)?.token !== token) return;
+      const current = runs.get(runId);
+      if (!current) return;
+      const hydratedRun = createRun(
+        {
+          ...workflow,
+          agents: [],
+          selectedAgentIds: agentDnsResolution.selectedAgentIds,
+          rejectedAgentIds: agentDnsResolution.rejectedAgentIds,
+        },
+        agentDnsResolution,
+        agentSla,
+      );
+      const bootstrappedRun: ProofCourtRun = {
+        ...hydratedRun,
+        id: current.id,
+        createdAt: current.createdAt,
+        bootstrapping: false,
+        bootstrapError: undefined,
+        progress: 70,
+        events: [...current.events, 'Phase 1 bootstrap completed'],
+      };
+      runs.set(bootstrappedRun.id, bootstrappedRun);
+      persistRun(bootstrappedRun);
+    } catch (error) {
+      failBootstrapRun(
+        runId,
+        token,
+        error instanceof Error ? error.message : 'phase_one_failed',
+      );
+    } finally {
+      const job = activeBootstrapJobs.get(runId);
+      if (job?.token === token) {
+        clearTimeout(job.timer);
+        activeBootstrapJobs.delete(runId);
+      }
+    }
+  })();
+}
+
+function failBootstrapRun(runId: string, token: symbol, reason: string) {
+  const job = activeBootstrapJobs.get(runId);
+  if (job?.token !== token) return;
+
+  clearTimeout(job.timer);
+  activeBootstrapJobs.delete(runId);
+  const current = runs.get(runId);
+  if (!current || current.settlementReceipt?.fundingTxHash) return;
+
+  const failedRun: ProofCourtRun = {
+    ...current,
+    bootstrapping: false,
+    bootstrapError: reason,
+    progress: current.progress,
+    events: [
+      ...current.events,
+      `Phase 1 bootstrap failed: ${reason}`,
+    ],
+  };
+  runs.set(failedRun.id, failedRun);
+  persistRun(failedRun);
+}
+
+function getStoredRun(id: string): ProofCourtRun | undefined {
+  const run = runs.get(id);
+  if (!run) return undefined;
+  const reconciled = markStaleBootstrapIfNeeded(run);
+  if (reconciled !== run) {
+    runs.set(reconciled.id, reconciled);
+    persistRun(reconciled);
+  }
+  return reconciled;
+}
+
+function markStaleBootstrapIfNeeded(run: ProofCourtRun): ProofCourtRun {
+  if (!run.bootstrapping || run.bootstrapError || run.settlementReceipt?.fundingTxHash || activeBootstrapJobs.has(run.id)) {
+    return run;
+  }
+
+  const createdAtMs = run.createdAt ? Date.parse(run.createdAt) : Number.NaN;
+  if (!Number.isFinite(createdAtMs) || Date.now() - createdAtMs < phaseOneBootstrapDeadlineMs) {
+    return run;
+  }
+
+  const reason = `Phase 1 bootstrap timed out after ${Math.round(phaseOneBootstrapDeadlineMs / 60000)} minutes`;
+  return {
+    ...run,
+    bootstrapping: false,
+    bootstrapError: reason,
+    events: [...run.events, `Phase 1 bootstrap failed: ${reason}`],
+  };
+}
+
+app.post('/api/workflows/generate', async (req, res) => {
   const body = req.body ?? {};
   const text =
     (typeof body.text === 'string' && body.text.trim().length > 0 && body.text.trim()) ||
@@ -93,10 +264,32 @@ app.post('/api/workflows/generate', (req, res) => {
     return;
   }
 
-  const workflow = createWorkflow(text);
-  workflows.set(workflow.mandate.id, workflow);
-  persistWorkflow(workflow);
-  res.json(workflow);
+  try {
+    let mandate;
+    try {
+      mandate = await parseMandateWithZeroG(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'mandate_parse_failed';
+      const allowDeterministicFallback =
+        message.includes('insufficient balance')
+        || message.includes('Service provider does not exist')
+        || message.includes('No 0G Compute providers were discovered')
+        || message.includes('provider metadata lookup failed');
+
+      if (!allowDeterministicFallback) {
+        throw error;
+      }
+
+      mandate = parseMandate(text);
+    }
+
+    const workflow = createWorkflowFromMandate(mandate);
+    workflows.set(workflow.mandate.id, workflow);
+    persistWorkflow(workflow);
+    res.json(workflow);
+  } catch (error) {
+    res.status(424).json({ error: error instanceof Error ? error.message : 'mandate_parse_failed' });
+  }
 });
 
 app.post('/api/runs', async (req, res) => {
@@ -108,31 +301,67 @@ app.post('/api/runs', async (req, res) => {
     return;
   }
 
-  try {
-    const { agentDnsResolution, agentSla } = await createPhaseOneArtifacts(workflow.mandate);
-    const run = createRun(
-      {
-        ...workflow,
-        agents: [],
-        selectedAgentIds: agentDnsResolution.selectedAgentIds,
-        rejectedAgentIds: agentDnsResolution.rejectedAgentIds,
-      },
-      agentDnsResolution,
-      agentSla,
-    );
-    runs.set(run.id, run);
-    persistRun(run);
-    res.json(run);
-  } catch (error) {
-    res.status(424).json({ error: error instanceof Error ? error.message : 'phase_one_failed' });
-  }
+  const pendingRun = createRun(workflow);
+  runs.set(pendingRun.id, pendingRun);
+  persistRun(pendingRun);
+  res.json(pendingRun);
+
+  startPhaseOneBootstrap(pendingRun.id, workflow);
 });
 
-app.get('/api/runs/:id/escrow-intent', (req, res) => {
-  const run = runs.get(req.params.id);
+app.post('/api/runs/:id/bootstrap/retry', (req, res) => {
+  const run = getStoredRun(req.params.id);
 
   if (!run) {
     res.status(404).json({ error: 'run_not_found' });
+    return;
+  }
+
+  if (run.bootstrapping || activeBootstrapJobs.has(run.id)) {
+    res.status(409).json({ error: 'phase_one_bootstrap_already_running' });
+    return;
+  }
+
+  if (run.settlementReceipt?.fundingTxHash) {
+    res.status(409).json({ error: 'cannot_retry_phase_one_after_escrow_funding' });
+    return;
+  }
+
+  const retryRun: ProofCourtRun = {
+    ...run,
+    state: 'workflow_generated',
+    progress: 0,
+    bootstrapping: true,
+    bootstrapError: undefined,
+    agentDnsResolution: undefined,
+    agentSla: undefined,
+    agentHire: undefined,
+    permitReceipt: undefined,
+    agents: [],
+    selectedAgentIds: [],
+    rejectedAgentIds: [],
+    events: [...run.events, 'Retrying Phase 1 bootstrap with real AgentDNS + 0G AgentSLA'],
+  };
+  runs.set(retryRun.id, retryRun);
+  persistRun(retryRun);
+
+  const workflow = workflows.get(retryRun.mandate.id) ?? createWorkflowFromMandate(retryRun.mandate);
+  workflows.set(workflow.mandate.id, workflow);
+  persistWorkflow(workflow);
+  startPhaseOneBootstrap(retryRun.id, workflow);
+  res.json(retryRun);
+});
+
+app.get('/api/runs/:id/escrow-intent', (req, res) => {
+  const run = getStoredRun(req.params.id);
+
+  if (!run) {
+    res.status(404).json({ error: 'run_not_found' });
+    return;
+  }
+
+  if (run.bootstrapping || run.bootstrapError || !run.agentDnsResolution || !run.agentSla?.zeroGRoot) {
+    res.status(409).json({ error: run.bootstrapError ?? 'phase_one_bootstrap_not_ready' });
     return;
   }
 
@@ -144,10 +373,15 @@ app.get('/api/runs/:id/escrow-intent', (req, res) => {
 });
 
 app.post('/api/runs/:id/escrow', (req, res) => {
-  const run = runs.get(req.params.id);
+  const run = getStoredRun(req.params.id);
 
   if (!run) {
     res.status(404).json({ error: 'run_not_found' });
+    return;
+  }
+
+  if (run.bootstrapping || run.bootstrapError || !run.agentDnsResolution || !run.agentSla?.zeroGRoot) {
+    res.status(409).json({ error: run.bootstrapError ?? 'phase_one_bootstrap_not_ready' });
     return;
   }
 
@@ -193,7 +427,7 @@ app.post('/api/runs/:id/escrow', (req, res) => {
 });
 
 app.get('/api/runs/:id', (req, res) => {
-  const run = runs.get(req.params.id);
+  const run = getStoredRun(req.params.id);
 
   if (!run) {
     res.status(404).json({ error: 'run_not_found' });
@@ -204,10 +438,15 @@ app.get('/api/runs/:id', (req, res) => {
 });
 
 app.post('/api/runs/:id/advance', async (req, res) => {
-  const run = runs.get(req.params.id);
+  const run = getStoredRun(req.params.id);
 
   if (!run) {
     res.status(404).json({ error: 'run_not_found' });
+    return;
+  }
+
+  if (run.bootstrapping || run.bootstrapError || !run.agentDnsResolution || !run.agentSla?.zeroGRoot) {
+    res.status(409).json({ error: run.bootstrapError ?? 'phase_one_bootstrap_not_ready' });
     return;
   }
 
@@ -217,9 +456,48 @@ app.post('/api/runs/:id/advance', async (req, res) => {
     persistRun(nextRun);
     res.json(nextRun);
   } catch (error) {
+    const blockedRun = blockRunOnProofFailure(run, error instanceof Error ? error.message : 'advance_failed');
+    if (blockedRun) {
+      runs.set(blockedRun.id, blockedRun);
+      persistRun(blockedRun);
+      res.json(blockedRun);
+      return;
+    }
+
     res.status(500).json({ error: error instanceof Error ? error.message : 'advance_failed' });
   }
 });
+
+function blockRunOnProofFailure(run: ProofCourtRun, reason: string): ProofCourtRun | undefined {
+  const proofGateStates: ProofCourtRun['state'][] = [
+    'commit_running',
+    'execution_complete',
+    'evidence_stored',
+    'proof_verified',
+    'payout_locked',
+  ];
+  if (!proofGateStates.includes(run.state)) return undefined;
+
+  return {
+    ...run,
+    state: 'payout_blocked',
+    progress: Math.max(run.progress, 75),
+    evidence: {
+      ...run.evidence,
+      verificationResult: 'FAIL',
+      verdictCompliant: false,
+      verdictReason: reason,
+    },
+    payout: {
+      ...run.payout,
+      status: 'Blocked',
+    },
+    events: [
+      ...run.events,
+      `ProofCourt blocked payout: ${reason}`,
+    ],
+  };
+}
 
 app.post('/api/runs/:id/tamper', (req, res) => {
   const run = runs.get(req.params.id);

@@ -53,6 +53,9 @@ export default function AgentRegistry({ agents, state, run }: Props) {
           const isSelected = agent.score >= 80 || agent.status === 'System';
           const receipt = run?.verificationReceipt?.executorAgentId === agent.id ? run.verificationReceipt : null;
           const wasHired = run?.agentHire?.workerAgentId === agent.id;
+          const hasCurrentKeeperHubExecution = wasHired && run?.keeperHubReceipt?.status === 'Completed' && !run?.verificationReceipt;
+          const displayedExecutions = agent.executions + (hasCurrentKeeperHubExecution ? 1 : 0);
+          const displayedBlocks = agent.blocks + (hasCurrentKeeperHubExecution && state === 'payout_blocked' ? 1 : 0);
           const earnedAmount = wasHired && run?.settlementReceipt?.escrowStatus === 'Released'
             ? run.settlementReceipt.fundedAmount
             : agent.inft?.royaltiesEarned;
@@ -93,8 +96,8 @@ export default function AgentRegistry({ agents, state, run }: Props) {
               </div>
 
               <div className="mt-4 grid grid-cols-2 gap-2 text-[10px]">
-                <AgentStat label="Executions" value={String(agent.executions)} />
-                <AgentStat label="Blocks" value={String(agent.blocks)} />
+                <AgentStat label="Executions" value={String(displayedExecutions)} />
+                <AgentStat label="Blocks" value={String(displayedBlocks)} />
               </div>
 
               {agent.inft && (

@@ -9,6 +9,12 @@ const zeroGIndexerRpc = process.env.ZERO_G_INDEXER_RPC ?? 'https://indexer-stora
 const zeroGRpcUrl = process.env.ZERO_G_RPC_URL ?? process.env.RPC_URL ?? 'https://evmrpc-testnet.0g.ai';
 const zeroGApiKey = process.env.ZERO_G_API_KEY;
 const privateKey = process.env.ZERO_G_PRIVATE_KEY ?? process.env.PRIVATE_KEY;
+const zeroGStorageFinalityRequired = process.env.ZERO_G_STORAGE_FINALITY_REQUIRED === 'true';
+const zeroGStorageTaskSize = Number(process.env.ZERO_G_STORAGE_TASK_SIZE ?? 10);
+const zeroGPreferredStorageNodes = (process.env.ZERO_G_PREFERRED_STORAGE_NODES ?? 'http://34.83.53.209:5678,http://34.169.28.106:5678')
+  .split(',')
+  .map((url) => url.trim())
+  .filter(Boolean);
 const evidenceStore = new Map<string, StoredZeroGEvidence>();
 const evidenceStoreByRoot = new Map<string, StoredZeroGEvidence>();
 const cacheDir = path.join(process.cwd(), '.proofcourt', 'evidence');
@@ -155,25 +161,43 @@ function persistEvidence(input: ZeroGStoreInput, result: ZeroGStoreResult) {
 }
 
 async function uploadWithZeroGSdk(input: ZeroGStoreInput): Promise<ZeroGStoreResult> {
-  const [{ Indexer, MemData }, bytes] = await Promise.all([
+  const [{ Indexer, MemData, StorageNode, selectNodes }, bytes] = await Promise.all([
     import('@0gfoundation/0g-ts-sdk') as Promise<{
       Indexer: new (url: string) => {
-        upload: (data: unknown, rpc: string, signer: ethers.Wallet) => Promise<[unknown, unknown]>;
+        getShardedNodes: () => Promise<{ trusted: Array<{ url: string; config: unknown }> }>;
+        selectNodes: (expectedReplica: number, method?: string) => Promise<[unknown[], Error | null]>;
+        upload: (
+          data: unknown,
+          rpc: string,
+          signer: ethers.Wallet,
+          uploadOpts?: { finalityRequired?: boolean; taskSize?: number; expectedReplica?: number },
+        ) => Promise<[unknown, unknown]>;
       };
       MemData: new (data: Uint8Array) => {
         merkleTree: () => Promise<[{ rootHash: () => string } | null, unknown]>;
       };
+      StorageNode: new (url: string) => unknown;
+      selectNodes: (
+        nodes: Array<{ url: string; config: unknown }>,
+        expectedReplica: number,
+        method?: string,
+      ) => [Array<{ url: string; config: unknown }>, boolean];
     }>,
     Promise.resolve(new TextEncoder().encode(JSON.stringify(input))),
   ]);
 
   const signer = new ethers.Wallet(privateKey!, new ethers.JsonRpcProvider(zeroGRpcUrl));
   const indexer = new Indexer(zeroGIndexerRpc);
+  preferStorageNodes(indexer, StorageNode, selectNodes);
   const memData = new MemData(bytes);
   const [tree, treeErr] = await memData.merkleTree();
   if (treeErr !== null) throw new Error(`0G merkle tree error: ${String(treeErr)}`);
 
-  const [tx, uploadErr] = await indexer.upload(memData, zeroGRpcUrl, signer);
+  const [tx, uploadErr] = await withProcessExitIntercept(() => indexer.upload(memData, zeroGRpcUrl, signer, {
+    finalityRequired: zeroGStorageFinalityRequired,
+    taskSize: Number.isFinite(zeroGStorageTaskSize) && zeroGStorageTaskSize > 0 ? zeroGStorageTaskSize : 10,
+    expectedReplica: 1,
+  }));
   if (uploadErr !== null) throw new Error(`0G upload error: ${String(uploadErr)}`);
 
   const txRecord = tx as { rootHash?: string; txHash?: string; rootHashes?: string[]; txHashes?: string[] };
@@ -189,6 +213,46 @@ async function uploadWithZeroGSdk(input: ZeroGStoreInput): Promise<ZeroGStoreRes
     txHash,
     source: '0g-sdk',
   };
+}
+
+function preferStorageNodes(
+  indexer: unknown,
+  StorageNode: new (url: string) => unknown,
+  selectNodes: (
+    nodes: Array<{ url: string; config: unknown }>,
+    expectedReplica: number,
+    method?: string,
+  ) => [Array<{ url: string; config: unknown }>, boolean],
+) {
+  if (zeroGPreferredStorageNodes.length === 0) return;
+
+  const target = indexer as {
+    getShardedNodes?: () => Promise<{ trusted: Array<{ url: string; config: unknown }> }>;
+    selectNodes?: (expectedReplica: number, method?: string) => Promise<[unknown[], Error | null]>;
+  };
+  if (typeof target.getShardedNodes !== 'function' || typeof target.selectNodes !== 'function') return;
+
+  const originalSelectNodes = target.selectNodes.bind(indexer);
+  target.selectNodes = async (expectedReplica: number, method?: string) => {
+    const shardedNodes = await target.getShardedNodes!();
+    const preferred = shardedNodes.trusted.filter((node) => zeroGPreferredStorageNodes.includes(node.url));
+    const [selected, ok] = selectNodes(preferred, expectedReplica, 'min');
+    if (ok) return [selected.map((node) => new StorageNode(node.url)), null];
+    return originalSelectNodes(expectedReplica, method ?? 'min');
+  };
+}
+
+async function withProcessExitIntercept<T>(operation: () => Promise<T>): Promise<T> {
+  const originalExit = process.exit;
+  process.exit = ((code?: string | number | null | undefined) => {
+    throw new Error(`0G SDK upload attempted to exit process with code ${code ?? 0}`);
+  }) as typeof process.exit;
+
+  try {
+    return await operation();
+  } finally {
+    process.exit = originalExit;
+  }
 }
 
 function canonicalizeEvidence(input: ZeroGStoreInput): ZeroGStoreInput {

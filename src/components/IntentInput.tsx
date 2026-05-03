@@ -60,7 +60,7 @@ export default function IntentInput({ onGenerate, isReady }: Props) {
           <span className="block text-white/42">No payout without proof.</span>
         </h2>
         <p className="mt-7 max-w-2xl text-lg leading-8 text-white/62">
-          ProofCourt makes autonomous agents accountable with permits, evidence, and verifiable execution before settlement.
+          Use task-only natural language in the form: send amount, transaction type, and destination. ProofCourt attaches AgentDNS, AgentSLA, permit, and proof-gated settlement automatically.
         </p>
 
         <div className="mt-9 w-full rounded-[14px] border border-white/12 bg-[#0D1117]/92 p-2 shadow-[0_28px_90px_rgba(0,0,0,0.42)]">
@@ -71,7 +71,7 @@ export default function IntentInput({ onGenerate, isReady }: Props) {
                 type="text"
                 value={value}
                 onChange={(event) => setValue(event.target.value)}
-                placeholder="Describe the agent goal..."
+                placeholder="Send 0.2 weekly transfer to 0x1234... or vault"
                 className="w-full border-none bg-transparent text-lg font-medium text-white outline-none placeholder:text-white/24"
                 disabled={!isReady || isSubmitting}
               />

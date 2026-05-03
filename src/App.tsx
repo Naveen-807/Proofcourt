@@ -10,10 +10,12 @@ import {
   advanceRun,
   attachEscrowFunding,
   createRun,
+  getRun,
   generateWorkflow,
   getEscrowFundingIntent,
   getIntegrationStatus,
   replayRun,
+  retryPhaseOneBootstrap,
   type IntegrationStatus,
   restoreRun,
   tamperRun,
@@ -69,6 +71,7 @@ export default function App() {
   const [run, setRun] = useState<ProofCourtRun | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
+  const [isCreatingRun, setIsCreatingRun] = useState(false);
 
   const syncRun = (nextRun: ProofCourtRun) => {
     setRun(nextRun);
@@ -79,18 +82,60 @@ export default function App() {
   };
 
   const handleGenerate = async (intent: string) => {
+    setIsCreatingRun(true);
     try {
       setApiError(null);
+      setRun(null);
+      setProgress(0);
       const nextWorkflow = await generateWorkflow(intent);
       setAgents(nextWorkflow.agents);
       setState('workflow_generated');
 
       const nextRun = await createRun(nextWorkflow.mandate.id);
-      setTimeout(() => syncRun(nextRun), 700);
+      syncRun(nextRun);
     } catch (error) {
+      setState('idle');
+      setAgents([]);
       setApiError(error instanceof Error ? error.message : 'Unable to generate workflow');
+      setIsCreatingRun(false);
     }
   };
+
+  useEffect(() => {
+    const shouldPollRun = Boolean(run?.id && (isCreatingRun || run.bootstrapping));
+    if (!shouldPollRun || !run?.id) {
+      return;
+    }
+
+    let cancelled = false;
+    const poll = window.setInterval(async () => {
+      try {
+        const latestRun = await getRun(run.id);
+        if (cancelled) return;
+        syncRun(latestRun);
+
+        if (latestRun.bootstrapError) {
+          setApiError(latestRun.bootstrapError);
+          setIsCreatingRun(false);
+          return;
+        }
+
+        if (!latestRun.bootstrapping && latestRun.agentDnsResolution && latestRun.agentSla) {
+          setApiError(null);
+          setIsCreatingRun(false);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setApiError(error instanceof Error ? error.message : 'Unable to load live run');
+        setIsCreatingRun(false);
+      }
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+    };
+  }, [isCreatingRun, run?.bootstrapping, run?.id]);
 
   useEffect(() => {
     getIntegrationStatus()
@@ -99,7 +144,10 @@ export default function App() {
   }, []);
 
   const handleStartRun = async () => {
-    if (!run) return;
+    if (!run || run.bootstrapping || run.bootstrapError || !run.agentDnsResolution || !run.agentSla?.zeroGRoot) {
+      setApiError('Live AgentDNS and AgentSLA are still being prepared. Wait for the run to finish bootstrapping before funding escrow.');
+      return;
+    }
 
     try {
       setApiError(null);
@@ -157,6 +205,20 @@ export default function App() {
     }
   };
 
+  const handleRetryBootstrap = async () => {
+    if (!run) return;
+
+    try {
+      setApiError(null);
+      setIsCreatingRun(true);
+      const nextRun = await retryPhaseOneBootstrap(run.id);
+      syncRun(nextRun);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Unable to retry Phase 1');
+      setIsCreatingRun(false);
+    }
+  };
+
   useEffect(() => {
     const autoAdvanceStates: AppState[] = [
       'prepare_running',
@@ -177,6 +239,7 @@ export default function App() {
     const timer = window.setTimeout(async () => {
       try {
         const nextRun = await advanceRun(run.id);
+        setApiError(null);
         syncRun(nextRun);
       } catch (error) {
         setApiError(error instanceof Error ? error.message : 'Unable to advance run');
@@ -259,7 +322,7 @@ export default function App() {
         ) : (
         <>
         <section className={cn('transition-all duration-700 ease-out', state !== 'idle' ? 'pointer-events-none opacity-0 max-h-0 overflow-hidden' : 'opacity-100')}>
-          <IntentInput onGenerate={handleGenerate} isReady={state === 'idle'} />
+          <IntentInput onGenerate={handleGenerate} isReady={state === 'idle' && !isCreatingRun} />
         </section>
 
         {apiError && (
@@ -267,9 +330,9 @@ export default function App() {
             <div className="flex items-start gap-3">
               <ShieldAlert className="mt-0.5 h-4 w-4 text-[#EF4D5B]" />
               <div>
-                <div className="font-bold">Courtroom API unavailable</div>
+                <div className="font-bold">Courtroom request failed</div>
                 <div className="mt-1 text-xs text-white/55">
-                  {apiError}. Start the API server with <span className="font-mono text-white">npm run api</span>.
+                  {apiError}
                 </div>
               </div>
             </div>
@@ -298,8 +361,10 @@ export default function App() {
                   progress={progress}
                   run={run}
                   onStart={handleStartRun}
+                  onRetryBootstrap={handleRetryBootstrap}
                   walletConnected={isConnected}
                   escrowFunded={Boolean(run?.settlementReceipt?.fundingTxHash)}
+                  isBootstrappingRun={isCreatingRun || Boolean(run?.bootstrapping)}
                 />
                 <SponsorProofPanels
                   state={state}
@@ -346,7 +411,7 @@ function ControlCenter({
   integrationStatus: IntegrationStatus | null;
 }) {
   const trustedAgents = agents.filter((agent) => agent.score >= 80 || agent.status === 'System');
-  const isBlocked = state === 'tamper_detected' || state === 'payout_blocked';
+  const isBlocked = state === 'tamper_detected' || state === 'payout_blocked' || Boolean(run?.bootstrapError);
   const isVerified = ['proof_verified', 'payout_released', 'reputation_updated'].includes(state);
   const pendingPermit = ['workflow_generated', 'agents_selected', 'prepare_running'].includes(state);
   const sponsorReady = [integrationStatus?.axl, integrationStatus?.zeroG, integrationStatus?.keeperHub].filter(Boolean).filter((item) => item?.configured).length;

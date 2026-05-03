@@ -7,13 +7,13 @@ const WORK_REGISTRY_ABI = [
 ];
 
 const COORDINATOR_ABI = [
-  'function prepare(uint256 caseId, uint256 workflowId, bytes32 mandateHash, address executor, bytes32 actionHash, uint256 expiry, bytes32 permitHash, bytes32 slaHash, bytes32 agentDnsResolutionHash, uint256 minTrustScore) external',
+  'function prepare(uint256 caseId, uint256 workflowId, bytes32 mandateHash, address requester, address executor, bytes32 actionHash, uint256 expiry, bytes32 permitHash, bytes32 slaHash, bytes32 agentDnsResolutionHash, uint256 minTrustScore) external',
   'function commit(uint256 caseId, uint256 workflowId, address executor, bytes payload, bytes32 permitHash, bytes32 axlTranscriptHash, bytes32 keeperHubReceiptHash, bytes32 zeroGRoot, bytes32 verificationHash) external',
   'function abort(uint256 caseId, uint256 workflowId, address executor, bytes32 reasonHash, bytes32 zeroGRoot) external',
 ];
 
-const rpcUrl = process.env.RPC_URL ?? process.env.ZERO_G_RPC_URL;
-const privateKey = process.env.PRIVATE_KEY ?? process.env.ZERO_G_PRIVATE_KEY;
+const rpcUrl = firstDefined(process.env.RPC_URL, process.env.ZERO_G_RPC_URL);
+const privateKey = firstDefined(process.env.PRIVATE_KEY, process.env.ZERO_G_PRIVATE_KEY);
 const executorPrivateKey = process.env.EXECUTOR_PRIVATE_KEY;
 const escrowAddress = process.env.PROOFCOURT_ESCROW_ADDRESS;
 const workRegistryAddress = process.env.WORK_REGISTRY_ADDRESS;
@@ -42,7 +42,7 @@ export function getEscrowFundingIntent(run: ProofCourtRun): EscrowFundingIntent 
     escrowAddress,
     executorAddress,
     mandateHash: toBytes32(run.agentSla?.mandateHash ?? run.mandate.id),
-    payoutWei: ethers.parseEther(amountToEth(run.mandate.maxExecutorPayout)).toString(),
+    payoutWei: ethers.parseEther(amountToNative(run.mandate.maxExecutorPayout)).toString(),
     payoutLabel: run.mandate.maxExecutorPayout,
     workflowId: workflowIdForRun(run),
   };
@@ -63,6 +63,11 @@ export async function prepareSettlement(run: ProofCourtRun): Promise<SettlementR
   try {
     const { signer, executorSigner } = getSigners();
     const coordinator = new ethers.Contract(coordinatorAddress, COORDINATOR_ABI, signer);
+    const requesterAddress = run.settlementReceipt.payerAddress
+      || run.agentDnsResolution?.records.find((record) => record.role === 'Requester')?.holder;
+    if (!requesterAddress) {
+      throw new Error('Requester address is required before prepare can run');
+    }
     const executorAddress = await executorSigner.getAddress();
     const mandateHash = toBytes32(run.agentSla?.mandateHash ?? run.mandate.id);
     const actionPayload = encodeActionPayload(run);
@@ -78,6 +83,7 @@ export async function prepareSettlement(run: ProofCourtRun): Promise<SettlementR
       caseId,
       workflowId,
       mandateHash,
+      requesterAddress,
       executorAddress,
       actionHash,
       expiry,
@@ -215,8 +221,8 @@ function getExecutorAddress(): string {
   throw new Error('EXECUTOR_PRIVATE_KEY or EXECUTOR_ADDRESS is required for the worker payout address');
 }
 
-function amountToEth(label: string): string {
-  return label.replace(/\s*ETH\s*$/i, '').trim();
+function amountToNative(label: string): string {
+  return label.replace(/\s*(?:ETH|OG|0G)\s*$/i, '').trim();
 }
 
 function toBytes32(value: string): string {
@@ -230,4 +236,8 @@ export function workflowIdForRun(run: ProofCourtRun): string {
 
 function uintId(value: string): number {
   return Number.parseInt(stableHash(value, '').slice(0, 10), 16);
+}
+
+function firstDefined(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => typeof value === 'string' && value.trim().length > 0);
 }

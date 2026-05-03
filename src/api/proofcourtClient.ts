@@ -69,10 +69,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`ProofCourt API ${response.status}: ${await response.text()}`);
+    throw new Error(formatApiError(response.status, await response.text()));
   }
 
   return response.json() as Promise<T>;
+}
+
+function formatApiError(status: number, bodyText: string): string {
+  let message = bodyText;
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: unknown };
+    if (typeof parsed.error === 'string') message = parsed.error;
+  } catch {
+    message = bodyText;
+  }
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    const match = message.match(/\{.*\}/s);
+    if (!match) break;
+    try {
+      const parsed = JSON.parse(match[0]) as { error?: unknown };
+      if (typeof parsed.error !== 'string') break;
+      message = parsed.error;
+    } catch {
+      break;
+    }
+  }
+
+  return `ProofCourt API ${status}: ${message.replace(/\\"/g, '"')}`;
 }
 
 export async function generateWorkflow(text: string): Promise<WorkflowResponse> {
@@ -91,6 +115,14 @@ export async function createRun(mandateId: string): Promise<ProofCourtRun> {
     method: 'POST',
     body: JSON.stringify({ mandateId }),
   });
+}
+
+export async function getRun(runId: string): Promise<ProofCourtRun> {
+  return request<ProofCourtRun>(`/api/runs/${runId}`);
+}
+
+export async function retryPhaseOneBootstrap(runId: string): Promise<ProofCourtRun> {
+  return request<ProofCourtRun>(`/api/runs/${runId}/bootstrap/retry`, { method: 'POST' });
 }
 
 export async function getEscrowFundingIntent(runId: string): Promise<EscrowFundingIntent> {

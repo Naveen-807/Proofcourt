@@ -9,6 +9,7 @@ const axlNodeUrls = {
   verifier2: process.env.AXL_VERIFIER_2_NODE_URL ?? process.env.AXL_JUDGE_NODE_URL ?? axlNodeUrl,
   verifier3: process.env.AXL_VERIFIER_3_NODE_URL ?? axlNodeUrl,
 };
+const axlEnableProtocolRoutes = process.env.AXL_ENABLE_PROTOCOL_ROUTES === 'true';
 
 const transcriptByWorkflow = new Map<string, AxlSendResult[]>();
 type AxlRole = keyof typeof axlNodeUrls;
@@ -34,24 +35,32 @@ export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationRe
       throw new Error(`AXL ${targetNode} node is online but did not expose a peer id`);
     }
 
-    const response = await fetch(buildProtocolUrl(sourceUrl, input.envelope, targetPeerId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildProtocolBody(input, requestMetadata)),
-    });
+    let transport: 'mcp' | 'a2a' | 'send' = input.envelope;
+    let response: Response;
+    if (axlEnableProtocolRoutes) {
+      response = await fetch(buildProtocolUrl(sourceUrl, input.envelope, targetPeerId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildProtocolBody(input, requestMetadata)),
+      });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`AXL ${input.envelope} route returned ${response.status}${text ? `: ${text.slice(0, 180)}` : ''}`);
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        response = await fallbackSend(sourceUrl, targetPeerId, input, requestMetadata, `${response.status}${text ? `: ${text.slice(0, 180)}` : ''}`);
+        transport = 'send';
+      }
+    } else {
+      response = await fallbackSend(sourceUrl, targetPeerId, input, requestMetadata, 'protocol routes disabled');
+      transport = 'send';
     }
 
-    const body = await readJsonOrEmpty(response);
+    const body = transport === 'send' ? {} : await readJsonOrEmpty(response);
     const data = {
       id: stringField(body, ['id', 'messageId']) ?? requestMetadata.id,
       nodeId: targetTopology.nodeId ?? targetPeerId,
       messageId: stringField(body, ['messageId', 'id']) ?? requestMetadata.messageId,
       envelope: requestMetadata.envelope,
-      hash: stringField(body, ['hash']) ?? stableHash({ protocol: 'proofcourt-axl-v2', requestMetadata, body }),
+      hash: stringField(body, ['hash']) ?? stableHash({ protocol: 'proofcourt-axl-v2', transport, requestMetadata, body }),
       payloadHash: requestMetadata.payloadHash,
       timestamp: stringField(body, ['timestamp']) ?? requestMetadata.timestamp,
     };
@@ -67,6 +76,43 @@ export async function sendAxlMessage(input: AxlSendInput): Promise<IntegrationRe
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : 'Unknown AXL error');
   }
+}
+
+async function fallbackSend(
+  sourceUrl: string,
+  targetPeerId: string,
+  input: AxlSendInput,
+  requestMetadata: AxlSendResult,
+  routeError: string,
+): Promise<Response> {
+  const response = await fetch(`${sourceUrl.replace(/\/$/, '')}/send`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Destination-Peer-Id': targetPeerId,
+      'X-ProofCourt-Envelope': input.envelope,
+      'X-ProofCourt-Type': input.type,
+      'X-ProofCourt-Route-Error': routeError,
+    },
+    body: JSON.stringify({
+      workflowId: input.workflowId,
+      from: input.from,
+      to: input.to,
+      type: input.type,
+      envelope: input.envelope,
+      payload: input.payload,
+      payloadHash: requestMetadata.payloadHash,
+      messageId: requestMetadata.messageId,
+      sentAt: requestMetadata.timestamp,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`AXL send fallback returned ${response.status}${text ? `: ${text.slice(0, 180)}` : ''}`);
+  }
+
+  return response;
 }
 
 export function getAxlTranscript(workflowId: string): AxlSendResult[] {

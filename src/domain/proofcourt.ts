@@ -286,6 +286,8 @@ export interface ProofCourtRun {
   id: string;
   state: AppState;
   progress: number;
+  bootstrapping?: boolean;
+  bootstrapError?: string;
   mandate: Mandate;
   agentDnsResolution?: AgentDNSResolution;
   agentSla?: AgentSLA;
@@ -373,32 +375,108 @@ export const WORKFLOW_NODE_SPECS: WorkflowNodeSpec[] = [
   { id: 'payout', label: 'Verified Payout', desc: 'Proof-gated settlement' },
 ];
 
+const NATIVE_TOKEN_LABEL = 'OG';
+export const MANDATORY_REQUIRED_PROOF: Mandate['requiredProof'] = ['AXL_LOGS', 'KEEPERHUB_RECEIPT', '0G_EVIDENCE_ROOT'];
+export const MANDATORY_MIN_AGENT_TRUST_SCORE = 80;
+
+export function applyProofCourtProtocolDefaults(mandate: Mandate): Mandate {
+  return {
+    ...mandate,
+    minAgentTrustScore: MANDATORY_MIN_AGENT_TRUST_SCORE,
+    requiredProof: MANDATORY_REQUIRED_PROOF,
+  };
+}
+
 export function parseMandate(text: string): Mandate {
   const normalized = text.toLowerCase();
-  const isWeekly = normalized.includes('weekly') || normalized.includes('week');
-  const isBuy = normalized.includes('buy') || normalized.includes('eth rises') || normalized.includes('protected');
-  const isProofOnly = normalized.includes('audit') || normalized.includes('research') || normalized.includes('report') || normalized.includes('proof only');
-  const amountMatch = text.match(/(\d+(?:\.\d+)?)\s*eth/i);
-  const amount = amountMatch ? `${amountMatch[1]} ETH` : 'Requires explicit ETH amount';
+  const amountMatch = text.match(/send\s+(\d+(?:\.\d+)?)(?:\s*(?:eth|og|0g))?/i) ?? text.match(/(\d+(?:\.\d+)?)\s*(?:eth|og|0g)/i);
+  const explicitInstructionMatch = text.match(
+    /send\s+\d+(?:\.\d+)?\s+(.*?)\s+to\s+((?:0x[a-fA-F0-9]{40})|(?:[a-zA-Z0-9._:-]+\.(?:eth|0g))|(?:vault))/i,
+  );
+  const typeHint = explicitInstructionMatch?.[1]?.trim().toLowerCase() ?? normalized;
+  const destinationHint = explicitInstructionMatch?.[2]?.trim();
+  const amount = amountMatch ? `${amountMatch[1]} ${NATIVE_TOKEN_LABEL}` : `Requires explicit ${NATIVE_TOKEN_LABEL} amount`;
+  const intent = inferMandateIntent(typeHint, normalized);
+  const frequency = inferMandateFrequency(intent, normalized);
+  const destination = inferMandateDestination(destinationHint, normalized);
 
-  return {
+  return applyProofCourtProtocolDefaults({
     id: `mandate_${Date.now()}`,
     text,
-    intent: isProofOnly ? 'proof_only_task' : isBuy ? 'protected_buy' : isWeekly ? 'weekly_transfer' : 'recurring_vault_deposit',
+    intent,
     amount,
-    frequency: isBuy ? 'event' : isWeekly ? 'weekly' : 'monthly',
-    destination: normalized.includes('vault') ? 'vault' : 'Requires approved destination',
-    maxExecutorPayout: amountMatch ? `${amountMatch[1]} ETH` : 'Requires explicit ETH payout',
-    minAgentTrustScore: 80,
-    requiredProof: ['AXL_LOGS', 'KEEPERHUB_RECEIPT', '0G_EVIDENCE_ROOT'],
-  };
+    frequency,
+    destination,
+    maxExecutorPayout: amountMatch ? `${amountMatch[1]} ${NATIVE_TOKEN_LABEL}` : `Requires explicit ${NATIVE_TOKEN_LABEL} payout`,
+    minAgentTrustScore: MANDATORY_MIN_AGENT_TRUST_SCORE,
+    requiredProof: MANDATORY_REQUIRED_PROOF,
+  });
+}
+
+function inferMandateIntent(
+  typeHint: string,
+  normalizedText: string,
+): Mandate['intent'] {
+  if (
+    typeHint.includes('proofonlytask')
+    || typeHint.includes('proof only')
+    || typeHint.includes('audit')
+    || typeHint.includes('research')
+    || typeHint.includes('report')
+    || normalizedText.includes('proof only')
+  ) {
+    return 'proof_only_task';
+  }
+
+  if (
+    typeHint.includes('protectedbuy')
+    || typeHint.includes('protected buy')
+    || typeHint.includes('buy')
+    || normalizedText.includes('eth rises')
+    || normalizedText.includes('protected')
+  ) {
+    return 'protected_buy';
+  }
+
+  if (
+    typeHint.includes('weeklytransfer')
+    || typeHint.includes('weekly transfer')
+    || (typeHint.includes('transfer') && normalizedText.includes('weekly'))
+    || normalizedText.includes('week')
+  ) {
+    return 'weekly_transfer';
+  }
+
+  return 'recurring_vault_deposit';
+}
+
+function inferMandateFrequency(
+  intent: Mandate['intent'],
+  normalizedText: string,
+): Mandate['frequency'] {
+  if (intent === 'protected_buy' || intent === 'proof_only_task') return 'event';
+  if (intent === 'weekly_transfer' || normalizedText.includes('week')) return 'weekly';
+  return 'monthly';
+}
+
+function inferMandateDestination(
+  destinationHint: string | undefined,
+  normalizedText: string,
+): string {
+  if (destinationHint && destinationHint.length > 0) return destinationHint;
+  if (normalizedText.includes(' to vault') || normalizedText.endsWith(' vault')) return 'vault';
+  return 'Requires explicit destination address';
 }
 
 export function createWorkflow(text: string): WorkflowResponse {
   const mandate = parseMandate(text);
+  return createWorkflowFromMandate(mandate);
+}
 
+export function createWorkflowFromMandate(mandate: Mandate): WorkflowResponse {
+  const normalizedMandate = applyProofCourtProtocolDefaults(mandate);
   return {
-    mandate,
+    mandate: normalizedMandate,
     workflowNodes: WORKFLOW_NODE_SPECS,
     agents: [],
     selectedAgentIds: [],
@@ -412,11 +490,13 @@ export function createRun(
   agentSla?: AgentSLA,
 ): ProofCourtRun {
   const agents = workflow.agents.length > 0 ? workflow.agents : agentsFromDns(agentDnsResolution);
+  const artifactsReady = Boolean(agentDnsResolution && agentSla?.zeroGRoot);
   return {
     id: `run_${Date.now()}`,
     createdAt: new Date().toISOString(),
-    state: 'agents_selected',
+    state: artifactsReady ? 'agents_selected' : 'workflow_generated',
     progress: 0,
+    bootstrapping: !artifactsReady,
     mandate: workflow.mandate,
     agentDnsResolution,
     agentSla,
@@ -443,7 +523,7 @@ export function createRun(
       tampered: false,
     },
     payout: {
-      escrowFunded: '0 ETH',
+      escrowFunded: `0 ${NATIVE_TOKEN_LABEL}`,
       transferAmount: workflow.mandate.amount,
       executorPayout: workflow.mandate.maxExecutorPayout,
       status: 'Inactive',
@@ -453,6 +533,7 @@ export function createRun(
     replayedFromZeroG: false,
     events: [
       'Mandate created',
+      ...(!artifactsReady ? ['Preparing live AgentDNS + AgentSLA artifacts'] : []),
       ...(agentDnsResolution ? [`AgentDNS resolved from Agent iNFT contract: ${agentDnsResolution.resolutionHash}`] : []),
       ...(agentSla?.zeroGRoot ? [`AgentSLA stored on 0G before permit: ${agentSla.zeroGRoot}`] : []),
     ],
