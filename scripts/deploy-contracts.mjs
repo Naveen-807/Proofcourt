@@ -8,7 +8,9 @@ const artifactsDir = path.join(rootDir, 'artifacts', 'contracts');
 
 const {
   RPC_URL,
+  ZERO_G_RPC_URL,
   PRIVATE_KEY,
+  ZERO_G_PRIVATE_KEY,
   AGENT_METADATA_BASE_URI,
   REQUESTER_ADDRESS,
   WORKER_ADDRESS,
@@ -21,8 +23,16 @@ const {
   EXECUTOR_PRIVATE_KEY,
 } = process.env;
 
-if (!RPC_URL || !PRIVATE_KEY) {
-  console.error('Missing RPC_URL or PRIVATE_KEY. Copy .env.example to .env.local and set deployment values.');
+const effectiveRpcUrl = RPC_URL || ZERO_G_RPC_URL;
+const effectivePrivateKey = PRIVATE_KEY || ZERO_G_PRIVATE_KEY;
+
+if (!effectiveRpcUrl || !effectivePrivateKey) {
+  console.error('Missing RPC_URL/ZERO_G_RPC_URL or PRIVATE_KEY/ZERO_G_PRIVATE_KEY. Copy .env.example to .env and set deployment values.');
+  process.exit(1);
+}
+
+if (!EXECUTOR_PRIVATE_KEY && !WORKER_ADDRESS && !EXECUTOR_ADDRESS) {
+  console.error('Missing EXECUTOR_PRIVATE_KEY, WORKER_ADDRESS, or EXECUTOR_ADDRESS. Use a separate worker address for the payout recipient.');
   process.exit(1);
 }
 
@@ -46,8 +56,8 @@ async function deploy(contractName, signer, args = []) {
   return contract;
 }
 
-const provider = new ethers.JsonRpcProvider(RPC_URL);
-const signer = new ethers.Wallet(PRIVATE_KEY, provider);
+const provider = new ethers.JsonRpcProvider(effectiveRpcUrl);
+const signer = new ethers.Wallet(effectivePrivateKey, provider);
 const workerAddress = WORKER_ADDRESS || EXECUTOR_ADDRESS ||
   (EXECUTOR_PRIVATE_KEY ? new ethers.Wallet(EXECUTOR_PRIVATE_KEY, provider).address : signer.address);
 const requesterAddress = REQUESTER_ADDRESS || signer.address;
@@ -85,6 +95,7 @@ const coordinator = await deploy('ProofCourtCoordinator', signer, [
 const coordinatorAddress = await coordinator.getAddress();
 
 // Register and mint iNFTs for all 5 court roles
+const agentTokenIds = {};
 for (const agent of courtAgents) {
   await registerAgentIfNeeded(reputation, agent.address, agent.role, agent.score);
   await (await agentInft.mint(
@@ -93,7 +104,10 @@ for (const agent of courtAgents) {
     agent.playbook,
     agent.bps,
   )).wait();
-  console.log(`iNFT minted for ${agent.slug} (${agent.address})`);
+  const tokenId = Number(await agentInft.nextTokenId()) - 1;
+  await (await agentInft.initializeReputation(tokenId, agent.score, ethers.ZeroHash)).wait();
+  agentTokenIds[agent.slug] = tokenId;
+  console.log(`iNFT #${tokenId} minted for ${agent.slug} (${agent.address}) with score ${agent.score}`);
 }
 
 await (await evidenceRegistry.setVerdictRecorder(verifier1Address)).wait();
@@ -101,6 +115,7 @@ await (await escrow.setJudge(coordinatorAddress)).wait();
 await (await workRegistry.setJudge(coordinatorAddress)).wait();
 await (await evidenceRegistry.setJudge(coordinatorAddress)).wait();
 await (await reputation.setJudge(coordinatorAddress)).wait();
+await (await agentInft.setJudge(coordinatorAddress)).wait();
 
 const deployments = {
   chainId: Number((await provider.getNetwork()).chainId),
@@ -112,6 +127,7 @@ const deployments = {
     verifier2: verifier2Address,
     verifier3: verifier3Address,
   },
+  agentTokenIds,
   contracts: {
     ProofCourtEscrow: await escrow.getAddress(),
     WorkRegistry: await workRegistry.getAddress(),
@@ -127,6 +143,15 @@ const outPath = path.join(rootDir, 'deployments', `${deployments.chainId}.json`)
 fs.writeFileSync(outPath, JSON.stringify(deployments, null, 2));
 
 console.log(`Deployment written to ${path.relative(rootDir, outPath)}`);
+console.log('\nAdd these addresses to .env and restart npm run dev:full:');
+console.log(`RPC_URL="${effectiveRpcUrl}"`);
+console.log(`PROOFCOURT_ESCROW_ADDRESS="${deployments.contracts.ProofCourtEscrow}"`);
+console.log(`WORK_REGISTRY_ADDRESS="${deployments.contracts.WorkRegistry}"`);
+console.log(`EVIDENCE_REGISTRY_ADDRESS="${deployments.contracts.EvidenceRegistry}"`);
+console.log(`AGENT_REPUTATION_ADDRESS="${deployments.contracts.AgentReputation}"`);
+console.log(`AGENT_INFT_ADDRESS="${deployments.contracts.AgentINFT}"`);
+console.log(`PROOFCOURT_COORDINATOR_ADDRESS="${deployments.contracts.ProofCourtCoordinator}"`);
+console.log(`VITE_AGENT_INFT_ADDRESS="${deployments.contracts.AgentINFT}"`);
 
 async function registerAgentIfNeeded(reputation, agent, role, score) {
   const record = await reputation.agents(agent);
