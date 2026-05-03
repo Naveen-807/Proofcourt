@@ -17,7 +17,10 @@ export function buildVerificationReceipt(
 ): VerificationReceipt {
   const executor = getExecutorAgent(run);
   const criteria = buildCriteria(run, proofPassed);
-  const evidenceRoot = run.evidence.root || '0g-root-pending';
+  const evidenceRoot = run.evidence.root;
+  if (!evidenceRoot) {
+    throw new Error('0G evidence root is required before issuing a verification receipt');
+  }
   const verificationHash = stableHash({
     caseId: run.id,
     criteria,
@@ -85,6 +88,15 @@ export function calculateAgentTrust(
   return Math.round(score);
 }
 
+export function getLatestTrustScore(
+  agentId: string,
+  history: VerificationReceipt[],
+  baselineScore: number,
+): number {
+  const latest = history.filter((receipt) => receipt.executorAgentId === agentId).at(-1);
+  return latest?.trustScoreAfter ?? calculateAgentTrust(agentId, history, baselineScore);
+}
+
 export function applyTrustUpdate(run: ProofCourtRun, receipt: VerificationReceipt): ProofCourtRun {
   return {
     ...run,
@@ -136,6 +148,11 @@ function buildCriteria(run: ProofCourtRun, proofPassed: boolean): VerificationCr
       id: '0g_compute_verdict',
       label: '0G Compute verdict hash is linked to the case file',
       passed: Boolean(run.evidence.verdictHash) && (run.evidence.verdictConfidence ?? 0) >= 0.75,
+    },
+    {
+      id: 'submitted_work',
+      label: 'Worker output hash is not a known fraudulent demo hash',
+      passed: !run.workOutputHash || !/^0x(?:dead)+$/i.test(run.workOutputHash),
     },
     {
       id: 'payout_gate',

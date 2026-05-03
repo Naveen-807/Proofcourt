@@ -9,11 +9,17 @@ import {
 } from '../../src/domain/proofcourt.ts';
 import { sendAxlMessage } from '../adapters/axlAdapter.ts';
 import { executeKeeperHubWorkflow } from '../adapters/keeperHubAdapter.ts';
+import { updateOnChainReputation } from '../adapters/contractRegistry.ts';
 import { stableHash } from '../adapters/hash.ts';
 import { getEvidenceFromZeroG, listStoredEvidence, storeEvidenceOnZeroG } from '../adapters/zeroGAdapter.ts';
 import { recordZeroGComputeVerdict, runZeroGComputeVerdict } from '../adapters/zeroGComputeAdapter.ts';
+import { writeReputationToKV } from '../adapters/zeroGKvAdapter.ts';
+import {
+  buildProofCourtSettlementWorkflow,
+  executeWorkflow as executeKeeperHubMcpWorkflow,
+} from './keeperHubMcpClient.ts';
 import { abortSettlement, commitSettlement, prepareSettlement } from './settlementService.ts';
-import { applyTrustUpdate, buildVerificationReceipt, calculateAgentTrust, getExecutorAgent } from './trustScore.ts';
+import { applyTrustUpdate, buildVerificationReceipt, getExecutorAgent, getLatestTrustScore } from './trustScore.ts';
 
 const verificationHistoryByAgent = new Map<string, VerificationReceipt[]>();
 
@@ -71,7 +77,7 @@ export async function tamperRunWithIntegrations(run: ProofCourtRun): Promise<Pro
       },
       events: [
         ...tamperedRun.events,
-        `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} abort recorded: ${settlementReceipt.abortTxHash ?? 'pending'}`,
+        `0G Galileo abort recorded: ${settlementReceipt.abortTxHash ?? 'pending'}`,
       ],
     },
     verificationReceipt,
@@ -109,8 +115,8 @@ export async function replayRunFromZeroG(caseId: string, fallbackRun?: ProofCour
 
   const storedRun = evidenceRecord.evidence.runSnapshot as Partial<ProofCourtRun> | undefined;
   return {
-    ...fallbackRun,
     ...storedRun,
+    ...fallbackRun,
     evidence: {
       ...fallbackRun.evidence,
       ...storedRun?.evidence,
@@ -130,7 +136,7 @@ export function getTrustSummary(agentId: string, baselineScore: number) {
   const history = getAgentHistory(agentId);
   return {
     agentId,
-    score: calculateAgentTrust(agentId, history, baselineScore),
+    score: getLatestTrustScore(agentId, history, baselineScore),
     totalCases: history.length,
     passed: history.filter((receipt) => receipt.proofPassed).length,
     blocked: history.filter((receipt) => !receipt.proofPassed).length,
@@ -141,11 +147,20 @@ export function getTrustSummary(agentId: string, baselineScore: number) {
 }
 
 async function attachAxlPrepareMessages(run: ProofCourtRun): Promise<ProofCourtRun> {
+  if (!run.agentDnsResolution || !run.agentSla?.zeroGRoot) {
+    throw new Error('AgentDNS resolution and 0G-stored AgentSLA are required before Phase 1 Permit Commit');
+  }
+
   const permitHash = stableHash({
-    permit: 'ProofCourtPermit',
+    permit: 'PermitReceipt',
+    phase: 'MandatePermit',
     caseId: run.id,
     mandateId: run.mandate.id,
-    executor: 'Worker Agent',
+    mandateHash: run.agentSla.mandateHash,
+    slaHash: run.agentSla.slaHash,
+    zeroGSlaRoot: run.agentSla.zeroGRoot,
+    agentDnsResolutionHash: run.agentDnsResolution.resolutionHash,
+    executor: run.agentSla.workerAgentId,
     minTrustScore: run.mandate.minAgentTrustScore,
   });
   const messagesToSend = [
@@ -153,56 +168,94 @@ async function attachAxlPrepareMessages(run: ProofCourtRun): Promise<ProofCourtR
       from: 'Requester Agent',
       to: 'Worker Agent',
       type: 'WORK_REQUESTED',
-      payload: { mandateId: run.mandate.id, amount: run.mandate.amount, destination: run.mandate.destination },
+      payload: {
+        mandateId: run.mandate.id,
+        mandateHash: run.agentSla.mandateHash,
+        slaHash: run.agentSla.slaHash,
+        zeroGSlaRoot: run.agentSla.zeroGRoot,
+        amount: run.mandate.amount,
+        destination: run.mandate.destination,
+      },
     },
     {
       from: 'Worker Agent',
       to: 'Verifier-1',
-      type: 'MANDATE_ANALYZED',
-      payload: { mandateId: run.mandate.id, recommendedWorker: 'Worker Agent', risk: 'low' },
+      type: 'AGENT_DNS_RESOLVED',
+      payload: {
+        mandateId: run.mandate.id,
+        selectedWorker: run.agentSla.workerAgentId,
+        agentDnsResolutionHash: run.agentDnsResolution.resolutionHash,
+        agentInftAddress: run.agentDnsResolution.agentInftAddress,
+      },
     },
     {
       from: 'Verifier-1',
       to: 'Requester Agent',
-      type: 'PERMIT_REQUIRED',
-      payload: { caseId: run.id, requiredProof: run.mandate.requiredProof },
+      type: 'SLA_PREPARED',
+      payload: {
+        caseId: run.id,
+        slaHash: run.agentSla.slaHash,
+        zeroGSlaRoot: run.agentSla.zeroGRoot,
+        actionHash: run.agentSla.actionHash,
+        requiredProof: run.mandate.requiredProof,
+      },
     },
     {
       from: 'Verifier-1',
       to: 'Worker Agent',
-      type: 'PERMIT_APPROVED',
-      payload: { permitHash, minTrustScore: run.mandate.minAgentTrustScore },
+      type: 'PERMIT_COMMITTED',
+      payload: {
+        permitHash,
+        slaHash: run.agentSla.slaHash,
+        zeroGSlaRoot: run.agentSla.zeroGRoot,
+        minTrustScore: run.mandate.minAgentTrustScore,
+      },
     },
     {
       from: 'Verifier-2',
       to: 'Worker Agent',
       type: 'PERMIT_COSIGNED',
-      payload: { permitHash, verifier: 'Verifier-2' },
+      payload: { permitHash, slaHash: run.agentSla.slaHash, verifier: 'Verifier-2' },
     },
     {
       from: 'Verifier-3',
       to: 'Worker Agent',
       type: 'PERMIT_COSIGNED',
-      payload: { permitHash, verifier: 'Verifier-3' },
+      payload: { permitHash, slaHash: run.agentSla.slaHash, verifier: 'Verifier-3' },
     },
   ];
 
   const axlMessages = await sendAxlProtocolMessages(run, messagesToSend, []);
+  const axlTranscriptHash = stableHash(axlMessages);
 
   return {
     ...run,
     axlMessages,
+    permitReceipt: {
+      id: `permit_${run.id}`,
+      caseId: run.id,
+      mandateHash: run.agentSla.mandateHash,
+      slaHash: run.agentSla.slaHash,
+      zeroGSlaRoot: run.agentSla.zeroGRoot,
+      agentDnsResolutionHash: run.agentDnsResolution.resolutionHash,
+      permitHash,
+      axlTranscriptHash,
+      committedAt: new Date().toISOString(),
+      phase: 'MandatePermit',
+    },
     evidence: {
       ...run.evidence,
       permitHash,
-      axlTranscriptHash: stableHash(axlMessages),
+      axlTranscriptHash,
     },
-    events: [...run.events, 'AXL Requester/Worker/Verifier-1/2/3 permit protocol recorded'],
+    events: [...run.events, 'Phase 1 Mandate/Permit committed over AXL with AgentDNS + AgentSLA hashes'],
   };
 }
 
 async function attachPrepareSettlement(run: ProofCourtRun): Promise<ProofCourtRun> {
   const settlementReceipt = await prepareSettlement(run);
+  const requesterAddress = getAgentHolder(run, run.agentSla?.requesterAgentId, 'Requester');
+  const workerAddress = getAgentHolder(run, run.agentSla?.workerAgentId, 'Worker');
   const trialResult = await executeKeeperHubWorkflow({
     workflowId: run.id,
     phase: 'proof-trial',
@@ -211,6 +264,10 @@ async function attachPrepareSettlement(run: ProofCourtRun): Promise<ProofCourtRu
     payload: {
       caseId: run.id,
       mandateId: run.mandate.id,
+      slaHash: run.agentSla?.slaHash,
+      zeroGSlaRoot: run.agentSla?.zeroGRoot,
+      agentDnsResolutionHash: run.agentDnsResolution?.resolutionHash,
+      taskActionType: run.agentSla?.taskActionType,
       amountWei: '10000000000000',
       chainId: 16602,
       permitHash: run.evidence.permitHash,
@@ -222,9 +279,24 @@ async function attachPrepareSettlement(run: ProofCourtRun): Promise<ProofCourtRu
     ...run,
     settlementReceipt,
     proofTrialReceipt: trialResult.data,
+    agentHire: run.agentSla && run.agentDnsResolution ? {
+      id: `hire_${run.id}`,
+      caseId: run.id,
+      eventName: 'AgentHired',
+      requesterAgentId: run.agentSla.requesterAgentId,
+      workerAgentId: run.agentSla.workerAgentId,
+      requesterAddress,
+      workerAddress,
+      slaHash: run.agentSla.slaHash,
+      agentDnsResolutionHash: run.agentDnsResolution.resolutionHash,
+      zeroGSlaRoot: run.agentSla.zeroGRoot ?? '',
+      hiredAt: new Date().toISOString(),
+      prepareTxHash: settlementReceipt.prepareTxHash,
+    } : undefined,
     events: [
       ...run.events,
-      `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} prepare recorded: ${settlementReceipt.prepareTxHash ?? 'pending'}`,
+      `0G Galileo prepare recorded: ${settlementReceipt.prepareTxHash ?? 'pending'}`,
+      `AgentHired emitted for ${run.agentSla?.requesterAgentId ?? 'requester'} -> ${run.agentSla?.workerAgentId ?? 'worker'}`,
       `KeeperHub ${trialResult.mode} proof trial ${trialResult.data.executionId} captured`,
     ],
   };
@@ -247,6 +319,10 @@ async function attachKeeperHubReceipt(run: ProofCourtRun): Promise<ProofCourtRun
     executor: 'Worker Agent',
     payload: {
       mandateId: run.mandate.id,
+      slaHash: run.agentSla?.slaHash,
+      zeroGSlaRoot: run.agentSla?.zeroGRoot,
+      agentDnsResolutionHash: run.agentDnsResolution?.resolutionHash,
+      taskActionType: run.agentSla?.taskActionType,
       amount: run.mandate.amount,
       destination: run.mandate.destination,
       permitHash: run.evidence.permitHash,
@@ -273,10 +349,18 @@ async function attachKeeperHubReceipt(run: ProofCourtRun): Promise<ProofCourtRun
   );
 
   return {
-    ...run,
-    axlMessages: receiptMessages,
-    keeperHubReceipt: result.data,
-    evidence: {
+      ...run,
+      axlMessages: receiptMessages,
+      keeperHubReceipt: result.data,
+      executionReceipt: {
+        phase: 'ProofCourtSettlement',
+        actionType: run.agentSla?.taskActionType ?? 'proofOnlyTask',
+        keeperHubExecutionId: result.data.executionId,
+        keeperHubReceiptHash: stableHash(result.data),
+        txHash: result.data.txHash,
+        recordedAt: new Date().toISOString(),
+      },
+      evidence: {
       ...run.evidence,
       axlTranscriptHash: stableHash(receiptMessages),
       keeperHubReceiptHash: stableHash(result.data),
@@ -311,7 +395,12 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
     version: 'proofcourt.evidence.v1',
     caseId: run.id,
     mandateHash,
-    axlTranscriptHash,
+    agentDnsResolution: run.agentDnsResolution,
+    agentSla: run.agentSla,
+    permitReceipt: run.permitReceipt,
+      executionReceipt: run.executionReceipt,
+      agentHire: run.agentHire,
+      axlTranscriptHash,
     trial: run.proofTrialReceipt
       ? {
         workflowId: run.proofTrialReceipt.workflowId,
@@ -351,8 +440,21 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
     mandate: run.mandate,
     permit: {
       permitHash: run.evidence.permitHash,
+      mandateHash: run.agentSla?.mandateHash,
+      slaHash: run.agentSla?.slaHash,
+      zeroGSlaRoot: run.agentSla?.zeroGRoot,
       minTrustScore: run.mandate.minAgentTrustScore,
       executor: 'Worker Agent',
+    },
+    sharedSwarmState: {
+      caseId: run.id,
+      agentMemoryRoots: run.agentSla?.agentMemoryRoots,
+      agentHire: run.agentHire,
+      coordination: {
+        requester: run.agentSla?.requesterAgentId,
+        worker: run.agentSla?.workerAgentId,
+        verifiers: run.agentSla?.verifierAgentIds,
+      },
     },
     axlTranscript: proofMessages,
     keeperHubReceipt: run.keeperHubReceipt,
@@ -392,7 +494,7 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
   const computeResult = await runZeroGComputeVerdict({
     caseId: run.id,
     evidenceRoot: baseCaseFileHash,
-    mandateHash,
+    mandateHash: run.agentSla?.mandateHash ?? mandateHash,
     permitHash: run.evidence.permitHash,
     axlTranscriptHash,
     keeperHubReceiptHash,
@@ -414,6 +516,28 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
   const result = await storeEvidenceOnZeroG({
     caseId: run.id,
     evidence: finalCaseFile,
+  });
+  const swarmMemoryResult = await storeEvidenceOnZeroG({
+    caseId: `swarm-memory_${run.id}`,
+    evidence: {
+      version: 'proofcourt.swarm-memory.v1',
+      caseId: run.id,
+      mandate: run.mandate,
+      agentDnsResolutionHash: run.agentDnsResolution?.resolutionHash,
+      slaHash: run.agentSla?.slaHash,
+      agentMemoryRoots: run.agentSla?.agentMemoryRoots,
+      agentHire: run.agentHire,
+      axlMessages: proofMessages.map((message) => ({
+        from: message.from,
+        to: message.to,
+        type: message.type,
+        hash: message.hash,
+        payloadHash: message.payloadHash,
+      })),
+      executionReceipt: run.executionReceipt,
+      evidenceRoot: result.data.root,
+      storedAt: new Date().toISOString(),
+    },
   });
 
   return {
@@ -439,9 +563,25 @@ async function attachZeroGEvidence(run: ProofCourtRun): Promise<ProofCourtRun> {
       verificationHash: result.data.verificationHash,
       verificationResult: 'PASS',
     },
+    swarmMemory: {
+      caseId: run.id,
+      memoryRoot: swarmMemoryResult.data.root,
+      memoryTxHash: swarmMemoryResult.data.txHash,
+      storedAt: new Date().toISOString(),
+      sharedStateHash: stableHash({
+        caseId: run.id,
+        evidenceRoot: result.data.root,
+        axlTranscriptHash,
+        keeperHubReceiptHash,
+      }),
+      agentMemoryRoots: run.agentSla?.agentMemoryRoots ?? {},
+    },
+    zeroGStorageRoot: result.data.root,
+    txHash: result.data.txHash ?? run.keeperHubReceipt.txHash,
     events: [
       ...run.events,
       `0G ${result.mode} evidence root stored`,
+      `0G ${swarmMemoryResult.mode} swarm memory root stored`,
       `0G Compute ${computeResult.mode} verdict ${computeResult.data.verdictHash} generated`,
     ],
   };
@@ -474,6 +614,7 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
       computeResult = await Promise.race([
         runZeroGComputeVerdict({
           caseId: run.id,
+          verifierId,
           evidenceRoot: canonicalRun.evidence.root ?? '',
           mandateHash,
           permitHash: run.evidence.permitHash,
@@ -511,6 +652,8 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
       checks: proofCheck.checks,
       llmCompliant: llmSaysPass,
       computeVerdictHash: computeResult.data.verdictHash,
+      promptHash: computeResult.data.promptHash,
+      responseHash: computeResult.data.responseHash,
     });
     const verdictHash = stableHash({ verifierId, reasoningHash, decision });
     const verdict: VerifierVerdict = {
@@ -518,6 +661,14 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
       decision,
       reasoningHash,
       attestationHash: computeResult.data.attestationHash,
+      promptHash: computeResult.data.promptHash,
+      responseHash: computeResult.data.responseHash,
+      computePromptHash: computeResult.data.promptHash,
+      computeResponseHash: computeResult.data.responseHash,
+      model: computeResult.data.model,
+      source: computeResult.data.source,
+      signatureValid: computeResult.data.signatureValid,
+      computeVerdictHash: computeResult.data.verdictHash,
       verdictHash,
       signature: stableHash({ verifierId, verdictHash, ts: Date.now() }),
       timestamp: new Date().toISOString(),
@@ -580,26 +731,7 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
     ? await commitSettlement(runWithVerification)
     : await abortSettlement(runWithVerification);
   const settlementWorkflowResult = quorumPassed
-    ? await executeKeeperHubWorkflow({
-      workflowId: run.id,
-      phase: 'atomic-settlement',
-      action: 'ProofCourtEscrow.settleCase()',
-      executor: 'Worker Agent',
-      payload: {
-        caseId: settlementReceipt.contractCaseId ?? run.id,
-        localRunId: run.id,
-        agents: run.agents
-          .filter((agent) => agent.inft)
-          .map((agent) => ({
-            id: agent.id,
-            tokenId: agent.inft?.tokenId,
-            holder: agent.inft?.holder,
-            shareBps: agent.inft?.royaltyBps,
-          })),
-        evidenceRoot: runWithVerification.evidence.root,
-        verdictHash: runWithVerification.evidence.verdictHash,
-      },
-    })
+    ? await executeSettlementWorkflow(run, settlementReceipt, runWithVerification)
     : undefined;
   let verdictTxHash: string | undefined;
 
@@ -613,19 +745,64 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
       verdictTxHash = undefined;
     }
   }
+  const finalSwarmMemory = await storeEvidenceOnZeroG({
+    caseId: `swarm-memory-final_${run.id}`,
+    evidence: {
+      version: 'proofcourt.swarm-memory.final.v1',
+      caseId: run.id,
+      agentDnsResolutionHash: run.agentDnsResolution?.resolutionHash,
+      slaHash: run.agentSla?.slaHash,
+      agentMemoryRoots: run.agentSla?.agentMemoryRoots,
+      agentHire: run.agentHire,
+      verifierArtifacts: verdicts.map((verdict) => ({
+        verifierId: verdict.verifierId,
+        decision: verdict.decision,
+        promptHash: verdict.promptHash,
+        responseHash: verdict.responseHash,
+        model: verdict.model,
+        source: verdict.source,
+        signatureValid: verdict.signatureValid,
+        attestationHash: verdict.attestationHash,
+        verdictHash: verdict.verdictHash,
+        reasoningHash: verdict.reasoningHash,
+      })),
+      quorum: {
+        passed: passCount,
+        failed: failCount,
+        reached: quorumReached,
+      },
+      verificationReceipt,
+      settlementReceipt,
+      storedAt: new Date().toISOString(),
+    },
+  });
 
-  return {
+  const verifiedRun: ProofCourtRun = {
     ...canonicalRun,
     state: quorumPassed ? run.state : 'payout_blocked',
     progress: quorumPassed ? run.progress : 100,
     settlementReceipt,
     settlementKeeperHubReceipt: settlementWorkflowResult?.data,
+    runtimeKeeperHubWorkflow: settlementWorkflowResult?.runtimeWorkflow,
     verificationReceipt,
     verdicts,
     quorum: {
       passed: passCount,
       failed: failCount,
       reached: quorumReached,
+    },
+    swarmMemory: {
+      caseId: run.id,
+      memoryRoot: finalSwarmMemory.data.root,
+      memoryTxHash: finalSwarmMemory.data.txHash,
+      storedAt: new Date().toISOString(),
+      sharedStateHash: stableHash({
+        caseId: run.id,
+        verdicts,
+        settlementReceipt,
+        verificationReceipt,
+      }),
+      agentMemoryRoots: run.agentSla?.agentMemoryRoots ?? {},
     },
     evidence: {
       ...canonicalRun.evidence,
@@ -634,18 +811,108 @@ async function attachVerificationReceipt(run: ProofCourtRun): Promise<ProofCourt
       verdictTxHash,
     },
     payout: quorumPassed ? run.payout : { ...run.payout, status: 'Blocked' },
+    txHash: settlementReceipt.commitTxHash ?? settlementReceipt.abortTxHash ?? run.txHash,
     events: [
       ...run.events,
       `3-Verifier Jury: ${passCount} PASS / ${failCount} FAIL / ${verdicts.filter((v) => v.decision === 'OFFLINE').length} OFFLINE (quorum ${quorumReached ? 'closed' : 'incomplete'})`,
       `VerificationReceipt ${verificationReceipt.id} issued`,
       quorumPassed
-        ? `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} commit recorded: ${settlementReceipt.commitTxHash ?? 'pending'}`
-        : `${settlementReceipt.mode === 'live' ? 'Onchain' : 'Demo'} abort recorded: ${settlementReceipt.abortTxHash ?? 'pending'}`,
+        ? `0G Galileo commit recorded: ${settlementReceipt.commitTxHash ?? 'pending'}`
+        : `0G Galileo abort recorded: ${settlementReceipt.abortTxHash ?? 'pending'}`,
       ...(settlementWorkflowResult
-        ? [`KeeperHub ${settlementWorkflowResult.mode} atomic settlement ${settlementWorkflowResult.data.executionId} captured`]
+        ? [
+          ...(settlementWorkflowResult.runtimeWorkflow
+            ? [`KeeperHub settlement workflow built at runtime via MCP: ${settlementWorkflowResult.runtimeWorkflow.workflowId}`]
+            : []),
+          `KeeperHub ${settlementWorkflowResult.mode} atomic settlement ${settlementWorkflowResult.data.executionId} captured`,
+        ]
         : []),
+      `0G ${finalSwarmMemory.mode} final swarm memory root stored`,
     ],
   };
+
+  return quorumPassed ? verifiedRun : finalizeTrustUpdate(verifiedRun);
+}
+
+async function executeSettlementWorkflow(
+  run: ProofCourtRun,
+  settlementReceipt: NonNullable<ProofCourtRun['settlementReceipt']>,
+  runWithVerification: ProofCourtRun,
+) {
+  const payload = {
+    caseId: settlementReceipt.contractCaseId ?? run.id,
+    localRunId: run.id,
+    quorumPassed: true,
+    workerAddress: run.workerAddress ?? settlementReceipt.executorAddress,
+    requesterAddress: getRequesterAddress(run),
+    escrowAmount: run.mandate.amount,
+    agents: run.agents
+      .filter((agent) => agent.inft)
+      .map((agent) => ({
+        id: agent.id,
+        tokenId: agent.inft?.tokenId,
+        holder: agent.inft?.holder,
+        shareBps: agent.inft?.royaltyBps,
+      })),
+    evidenceRoot: runWithVerification.evidence.root,
+    verdictHash: runWithVerification.evidence.verdictHash,
+    verdict: 'PASS',
+  };
+
+  if (process.env.KEEPERHUB_BUILD_AT_RUNTIME === 'true') {
+    try {
+      const runtimeWorkflow = await buildProofCourtSettlementWorkflow(run.id);
+      const execution = await executeKeeperHubMcpWorkflow(runtimeWorkflow.workflowId, runtimeWorkflow.webhookKey, payload);
+      if (!execution.txHash) {
+        throw new Error(`KeeperHub runtime settlement execution ${execution.executionId} did not expose a transaction hash`);
+      }
+      const txHash = execution.txHash;
+      const logs = [
+        {
+          timestamp: new Date().toISOString(),
+          node: 'keeperhub.runtime-mcp',
+          level: 'info' as const,
+          message: `Runtime settlement workflow ${runtimeWorkflow.workflowId} executed`,
+          txHash,
+          outputHash: stableHash({ runtimeWorkflow, execution }),
+        },
+      ];
+
+      return {
+        mode: 'live' as const,
+        runtimeWorkflow: {
+          ...runtimeWorkflow,
+          phase: 'atomic-settlement' as const,
+        },
+        data: {
+          workflowId: runtimeWorkflow.workflowId,
+          phase: 'atomic-settlement' as const,
+          executionId: execution.executionId,
+          status: 'Completed' as const,
+          action: 'ProofCourtEscrow.settleCase()',
+          txHash,
+          payloadHash: stableHash(payload),
+          logHash: stableHash(logs),
+          logs,
+          gasOptimized: false,
+          retryCount: 0,
+          runtimeBuilt: true,
+          webhookKey: runtimeWorkflow.webhookKey,
+        },
+      };
+    } catch (error) {
+      console.warn(`[KeeperHub MCP] runtime workflow failed: ${error instanceof Error ? error.message : String(error)} — using configured settlement workflow`);
+    }
+  }
+
+  const configuredSettlement = await executeKeeperHubWorkflow({
+    workflowId: run.id,
+    phase: 'atomic-settlement',
+    action: 'ProofCourtEscrow.settleCase()',
+    executor: 'Worker Agent',
+    payload,
+  });
+  return { ...configuredSettlement, runtimeWorkflow: undefined };
 }
 
 async function sendAxlProtocolMessages(
@@ -696,6 +963,13 @@ function verifyRunArtifacts(
   const requireComputeVerdict = options.requireComputeVerdict ?? true;
   const checks = {
     permitHash: Boolean(run.evidence.permitHash),
+    agentDnsResolution: Boolean(run.agentDnsResolution?.resolutionHash),
+    agentSla: Boolean(run.agentSla?.slaHash && run.agentSla.zeroGRoot),
+    permitReceipt: Boolean(
+      run.permitReceipt?.permitHash &&
+      run.permitReceipt.slaHash === run.agentSla?.slaHash &&
+      run.permitReceipt.zeroGSlaRoot === run.agentSla?.zeroGRoot
+    ),
     axlTranscriptHash: stableHash(run.axlMessages) === run.evidence.axlTranscriptHash,
     keeperHubStatus: run.keeperHubReceipt.status === 'Completed',
     keeperHubLogHash: stableHash(run.keeperHubReceipt.logs ?? []) === run.keeperHubReceipt.logHash,
@@ -706,6 +980,7 @@ function verifyRunArtifacts(
     zeroGComputeVerdict: requireComputeVerdict
       ? Boolean(run.evidence.verdictHash) && (run.evidence.verdictConfidence ?? 0) >= 0.75
       : true,
+    submittedWork: isSubmittedWorkValid(run),
   };
 
   return {
@@ -714,7 +989,7 @@ function verifyRunArtifacts(
   };
 }
 
-function finalizeTrustUpdate(run: ProofCourtRun): ProofCourtRun {
+async function finalizeTrustUpdate(run: ProofCourtRun): Promise<ProofCourtRun> {
   const receipt = run.verificationReceipt;
 
   if (!receipt) {
@@ -723,14 +998,56 @@ function finalizeTrustUpdate(run: ProofCourtRun): ProofCourtRun {
 
   const updatedRun = applyTrustUpdate(run, receipt);
   recordReceipt(receipt);
+  const executor = getExecutorAgent(updatedRun);
+  const evidenceHash = receipt.verificationHash || receipt.evidenceRoot;
+  const onChain = executor.inft
+    ? await updateOnChainReputation(executor.inft.tokenId, receipt.scoreDelta, evidenceHash)
+    : undefined;
+  const kvResult = executor.inft
+    ? await writeReputationToKV({
+      tokenId: executor.inft.tokenId,
+      score: receipt.trustScoreAfter,
+      casesTotal: executor.executions,
+      casesPassed: executor.executions - executor.blocks,
+      lastUpdated: receipt.issuedAt,
+      evidenceHash,
+    })
+    : undefined;
 
   return {
     ...updatedRun,
+    reputationTxHash: onChain?.txHash,
+    reputationUpdateMode: onChain?.mode,
+    reputationError: onChain?.error,
+    zeroGKvTxHash: kvResult?.txHash,
     events: [
       ...run.events,
       `${receipt.executorName} trust score ${receipt.trustScoreBefore} -> ${receipt.trustScoreAfter} from receipt history`,
+      ...(onChain
+        ? [
+          onChain.mode === 'error'
+            ? `Agent iNFT #${onChain.tokenId} reputation update failed: ${onChain.error}`
+            : `Agent iNFT #${onChain.tokenId} reputation ${onChain.mode === 'live' ? `updated on-chain: ${onChain.txHash}` : `update ${onChain.mode}`}`,
+        ]
+        : []),
+      ...(kvResult?.mode === 'live' ? [`0G KV reputation stream updated: ${kvResult.txHash}`] : []),
     ],
   };
+}
+
+function isSubmittedWorkValid(run: ProofCourtRun): boolean {
+  if (!run.workOutputHash) return true;
+  return !/^0x(?:dead)+$/i.test(run.workOutputHash);
+}
+
+function getRequesterAddress(run: ProofCourtRun): string {
+  return getAgentHolder(run, run.agentSla?.requesterAgentId, 'Requester');
+}
+
+function getAgentHolder(run: ProofCourtRun, agentId: string | undefined, roleLabel: string): string {
+  const holder = run.agents.find((agent) => agent.id === agentId)?.inft?.holder;
+  if (!holder) throw new Error(`AgentDNS ${roleLabel} holder is required for settlement workflow payload`);
+  return holder;
 }
 
 function getAgentHistory(agentId: string): VerificationReceipt[] {
